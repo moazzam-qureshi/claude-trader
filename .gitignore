@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+.uv/
+uv.lock.backup
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Env
+.env
+.env.local
+*.secret
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Docker volumes (never commit local state)
+postgres-data/
+redis-data/
+grafana-data/
+prometheus-data/
+
+# Logs
+*.log
+logs/
+
+# Proposed changes (committed explicitly when reviewed)
+proposed_changes/
