@@ -1,0 +1,41 @@
+# Versioned policy. Every change is a commit. Every order records its policy_version
+# (git sha). Phase 0 values are minimal — most rules will be exercised from Phase 3.
+
+trading_enabled: false            # Phase 0: no orders at all
+execution_mode: paper             # paper | testnet | live
+
+universe:
+  - BTCUSDT
+  - ETHUSDT
+timeframes:
+  - 1m
+  - 5m
+
+# Signal detection (Phase 0: single archetype)
+per_archetype_confidence_threshold:
+  trend_pullback: 0.70
+
+per_archetype_cooldown_minutes:
+  trend_pullback: 15              # short TF cooldown for Phase 0 symbol×TF grid
+
+# Execution rails (unused Phase 0; defaults for Phase 3+)
+max_order_usd: 500
+max_open_positions_per_symbol: 1
+max_open_positions_total: 3
+max_orders_per_day: 20
+max_daily_realized_loss_usd: 200
+max_leverage: 2
+max_account_drawdown_pct: 10
+max_correlated_usd: 1000
+min_stop_distance_atr: 0.3
+max_stop_distance_atr: 5.0
+default_stop_atr_multiple: 1.5
+default_rr_minimum: 1.5
+
+# Claude invocation cap (unused Phase 0; triage only — retrospect/analyze/ad_hoc exempt)
+claude_daily_triage_cap: 20
+
+# Outcome horizons (Phase 0 uses the short end only)
+outcome_horizons:
+  - "15m"
+  - "1h"
