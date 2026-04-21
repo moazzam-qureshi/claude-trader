@@ -1,0 +1,134 @@
+name: trading-sandwich
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  ingestor:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["python", "-m", "trading_sandwich.ingestor.main"]
+
+  feature-worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "features", "-n", "features@%h", "--loglevel=info"]
+
+  signal-worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "signals", "-n", "signals@%h", "--loglevel=info"]
+
+  outcome-worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "outcomes", "-n", "outcomes@%h", "--loglevel=info"]
+
+  celery-beat:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["celery", "-A", "trading_sandwich.celery_app", "beat", "--loglevel=info"]
+
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  cli:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    profiles: ["oneshot"]
+    entrypoint: ["myapp"]
+
+  tools:
+    build: .
+    env_file: .env
+    volumes:
+      - ./:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    profiles: ["oneshot"]
+    entrypoint: []
+    working_dir: /app
+
+  test:
+    build: .
+    env_file: .env
+    volumes:
+      - ./:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    profiles: ["oneshot"]
+    entrypoint: ["pytest"]
+    working_dir: /app
+    environment:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
+
+volumes:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
