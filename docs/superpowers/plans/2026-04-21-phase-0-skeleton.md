@@ -118,7 +118,9 @@ Both services are defined in the `docker-compose.yml` created in Task 4 and shar
 ```
 trading-mcp-sandwich/
 ├── architecture.md                       (already exists)
-├── CLAUDE.md                             (created Task 2, agent policy — minimal stub Phase 0)
+├── CLAUDE.md                             (already exists — development-session policy; NOT the runtime brain)
+├── runtime/
+│   └── CLAUDE.md                         (created Task 2, runtime agent brain — Phase 0 stub, filled in Phase 2)
 ├── policy.yaml                           (created Task 2, minimal stub Phase 0)
 ├── pyproject.toml                        (Task 1)
 ├── uv.lock                               (Task 1)
@@ -420,22 +422,38 @@ git commit -m "chore: bootstrap project skeleton (pyproject, tests, ruff)"
 
 ---
 
-## Task 2: Add CLAUDE.md and policy.yaml stubs
+## Task 2: Add runtime CLAUDE.md and policy.yaml stubs
 
-These are version-controlled policy files the agent reads later. Phase 0 doesn't invoke Claude, but the files should exist so the discipline starts from day one.
+These are version-controlled policy files the **runtime trading agent** reads
+when invoked via `claude -p` during triage. Phase 0 doesn't invoke Claude, but
+the files should exist so the discipline (every prompt change = a git commit)
+starts from day one.
+
+**Path note.** The repo already contains a `CLAUDE.md` at the root — that one
+is for **development-session agents** (the agent helping build the system).
+The runtime agent brain must not collide with it, so it lives at
+`runtime/CLAUDE.md`. The CLI's Claude-invocation function will pass
+`cwd=runtime/` to `claude -p` in Phase 2 so it picks up the correct file.
 
 **Files:**
-- Create: `CLAUDE.md`
+- Create: `runtime/CLAUDE.md`
 - Create: `policy.yaml`
 
-- [ ] **Step 1: Write `CLAUDE.md` stub**
+- [ ] **Step 1: Write `runtime/CLAUDE.md` stub**
 
-Create `CLAUDE.md`:
+Run:
+```bash
+mkdir -p runtime
+```
+
+Create `runtime/CLAUDE.md`:
 ```markdown
-# Trading Sandwich — Agent Policy (Phase 0 stub)
+# Trading Sandwich — Runtime Agent Policy (Phase 0 stub)
 
-Phase 0 does not invoke Claude. This file exists to establish the discipline
-that every prompt change is a commit. Content will be expanded in Phase 2.
+This file is the **runtime** agent brain. It is read by `claude -p` during
+triage / analyze / retrospect / ad_hoc invocations at phase 2+. Phase 0 does
+not invoke Claude. This file exists only to establish the discipline that
+every prompt change is a commit.
 
 ## Placeholder sections (to be filled in Phase 2)
 
@@ -503,8 +521,8 @@ outcome_horizons:
 - [ ] **Step 3: Commit**
 
 ```bash
-git add CLAUDE.md policy.yaml
-git commit -m "chore: add CLAUDE.md and policy.yaml stubs (Phase 0 values)"
+git add runtime/CLAUDE.md policy.yaml
+git commit -m "chore: add runtime/CLAUDE.md and policy.yaml stubs (Phase 0 values)"
 ```
 
 ---
@@ -600,7 +618,8 @@ RUN pip install --no-cache-dir -e ".[dev]"
 COPY src/ ./src/
 COPY migrations/ ./migrations/
 COPY alembic.ini ./
-COPY policy.yaml CLAUDE.md ./
+COPY policy.yaml ./
+COPY runtime/ ./runtime/
 
 # Default cmd is overridden per service in compose.
 CMD ["python", "-c", "print('service entrypoint required via compose')"]
