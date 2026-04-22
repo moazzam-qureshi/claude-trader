@@ -113,6 +113,8 @@ services:
     profiles: ["oneshot"]
     entrypoint: []
     working_dir: /app
+    environment:
+      PYTHONPATH: /app/src
 
   test:
     build: .
@@ -124,6 +126,7 @@ services:
     entrypoint: ["pytest"]
     working_dir: /app
     environment:
+      PYTHONPATH: /app/src
       TESTCONTAINERS_RYUK_DISABLED: "true"
       TESTCONTAINERS_HOST_OVERRIDE: "host.docker.internal"
 
