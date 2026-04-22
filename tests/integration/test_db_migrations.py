@@ -39,3 +39,18 @@ async def test_migrations_run_and_create_raw_candles():
             result = await conn.execute(text("SELECT to_regclass('public.raw_candles')"))
             assert result.scalar() == "raw_candles"
         await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_all_phase_0_tables_exist():
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        _point_settings_at(url)
+        await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+
+        engine = create_async_engine(url)
+        async with engine.connect() as conn:
+            for tbl in ["raw_candles", "features", "signals", "signal_outcomes", "claude_decisions"]:
+                result = await conn.execute(text(f"SELECT to_regclass('public.{tbl}')"))
+                assert result.scalar() == tbl, f"{tbl} missing"
+        await engine.dispose()
