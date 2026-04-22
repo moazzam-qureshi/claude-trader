@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal as os_signal
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -69,10 +70,8 @@ async def run() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (os_signal.SIGTERM, os_signal.SIGINT):
-        try:
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:
-            pass
 
     stream_task = asyncio.create_task(
         _consume(settings.universe_symbols, settings.universe_timeframes,
