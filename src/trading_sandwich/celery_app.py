@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.signals import worker_process_init
 
 from trading_sandwich.config import get_settings
 from trading_sandwich.logging import configure_logging
@@ -37,3 +38,15 @@ app.conf.update(
     },
     beat_schedule={},
 )
+
+
+@worker_process_init.connect
+def _init_metrics_server(sender=None, **kwargs) -> None:
+    """Each Celery worker process exposes its own /metrics on a fixed port
+    chosen by queue name. Prometheus scrape config hits `<service>:<port>`.
+    """
+    from trading_sandwich.metrics import start_metrics_server
+
+    hostname = (sender.hostname if sender and getattr(sender, "hostname", None) else "") or ""
+    port = {"features": 9101, "signals": 9102, "outcomes": 9103}.get(hostname.split("@")[0], 0)
+    start_metrics_server(port)

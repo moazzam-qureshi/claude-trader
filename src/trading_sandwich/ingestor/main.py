@@ -58,6 +58,8 @@ async def _consume(symbols, timeframes, testnet, session_factory, stop) -> None:
 
 async def run() -> None:
     settings = get_settings()
+    from trading_sandwich.metrics import start_metrics_server
+    start_metrics_server(9100)
     session_factory = get_session_factory()
     logger.info("ingestor_starting", symbols=settings.universe_symbols,
                 timeframes=settings.universe_timeframes, testnet=settings.binance_testnet)
