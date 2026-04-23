@@ -37,6 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       typer>=0.12 \
       prometheus-client>=0.20 \
       python-json-logger>=2.0 \
+      pyyaml>=6.0 \
       pytest>=8.2 \
       pytest-asyncio>=0.23 \
       pytest-cov>=5.0 \
