@@ -1,7 +1,6 @@
 """Outcome worker. Measures forward result for a signal at a specified horizon."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -10,6 +9,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from trading_sandwich._async import run_coro
 from trading_sandwich.celery_app import app
 from trading_sandwich.db.engine import get_session_factory
 from trading_sandwich.db.models import RawCandle, SignalOutcome
@@ -100,4 +100,4 @@ async def _measure_async(signal_id: str, horizon: str) -> None:
     max_retries=5,
 )
 def measure_outcome(self, signal_id: str, horizon: str) -> None:
-    asyncio.run(_measure_async(signal_id, horizon))
+    run_coro(_measure_async(signal_id, horizon))

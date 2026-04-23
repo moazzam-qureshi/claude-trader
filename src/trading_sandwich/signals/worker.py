@@ -4,7 +4,6 @@ writes a signals row, and schedules outcome measurements.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -12,6 +11,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from trading_sandwich._async import run_coro
 from trading_sandwich.celery_app import app
 from trading_sandwich.contracts.models import FeaturesRow, Signal
 from trading_sandwich.db.engine import get_session_factory
@@ -82,9 +82,10 @@ async def _persist_signal(signal: Signal, session_factory) -> None:
 
 
 def _schedule_outcomes(signal: Signal) -> None:
+    # Local import avoids a circular import at module load.
+    from trading_sandwich.outcomes.worker import measure_outcome as measure_outcome_task
     for horizon, secs in HORIZONS_SECONDS.items():
-        app.send_task(
-            "trading_sandwich.outcomes.worker.measure_outcome",
+        measure_outcome_task.apply_async(
             args=[str(signal.signal_id), horizon],
             queue="outcomes",
             countdown=secs,
@@ -130,4 +131,4 @@ async def _detect_async(symbol: str, timeframe: str, close_time_iso: str) -> Non
 
 @app.task(name="trading_sandwich.signals.worker.detect_signals")
 def detect_signals(symbol: str, timeframe: str, close_time_iso: str) -> None:
-    asyncio.run(_detect_async(symbol, timeframe, close_time_iso))
+    run_coro(_detect_async(symbol, timeframe, close_time_iso))

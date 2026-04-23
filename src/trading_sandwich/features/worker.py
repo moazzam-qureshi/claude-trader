@@ -3,7 +3,6 @@ computes Phase 0 indicators, upserts a features row, and dispatches signal detec
 """
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from datetime import datetime
 from decimal import Decimal
@@ -12,6 +11,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from trading_sandwich._async import run_coro
 from trading_sandwich.celery_app import app
 from trading_sandwich.db.engine import get_session_factory
 from trading_sandwich.db.models import Features, RawCandle
@@ -87,14 +87,15 @@ async def _compute_async(symbol: str, timeframe: str, close_time_iso: str) -> No
     FEATURES_COMPUTED.labels(symbol=symbol, timeframe=timeframe).inc()
     logger.info("features_computed", symbol=symbol, tf=timeframe, close_time=close_time_iso)
 
-    app.send_task(
-        "trading_sandwich.signals.worker.detect_signals",
-        args=[symbol, timeframe, close_time_iso],
-        queue="signals",
+    # Local import avoids a circular import at module load: signals.worker
+    # itself imports celery_app (which includes features.worker in `include=`).
+    from trading_sandwich.signals.worker import detect_signals as detect_signals_task
+    detect_signals_task.apply_async(
+        args=[symbol, timeframe, close_time_iso], queue="signals",
     )
 
 
 @app.task(name="trading_sandwich.features.worker.compute_features")
 def compute_features(symbol: str, timeframe: str, close_time_iso: str) -> None:
     with FEATURE_COMPUTE_SECONDS.labels(symbol=symbol, timeframe=timeframe).time():
-        asyncio.run(_compute_async(symbol, timeframe, close_time_iso))
+        run_coro(_compute_async(symbol, timeframe, close_time_iso))

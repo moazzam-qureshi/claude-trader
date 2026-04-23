@@ -41,14 +41,25 @@ def _reset_module_singletons() -> None:
     # pool so the next send_task uses the new broker.
     if "trading_sandwich.celery_app" in sys.modules:
         from trading_sandwich.celery_app import app as celery_app
-        # conf.broker_url is a live env-backed view and already reflects the
-        # monkeypatched CELERY_BROKER_URL. But send_task publishes through
-        # app.amqp.producer_pool, and both app._pool (broker pool) and
-        # app.amqp (an @cached_property) cache a Connection bound to the URL
-        # seen at first use. Both must be cleared so the next send_task
-        # rebuilds against the current broker URL.
+        # conf.broker_url and result_backend are live env-backed views and
+        # already reflect the monkeypatched env. But Celery caches:
+        #   - app._pool          (broker connection pool)
+        #   - app.amqp           (@cached_property holding producer_pool)
+        #   - app.backend        (@cached_property holding result-backend client)
+        # Each caches a connection bound to the URL seen at first use; all
+        # three must be cleared so the next send_task / .get() reconnects to
+        # the URL currently in config.
         celery_app._pool = None
+        # Celery stashes the result backend in _backend_cache (thread-safe
+        # backends) or in _local.backend (non-thread-safe). Clear both.
+        celery_app._backend_cache = None
+        if hasattr(celery_app._local, "backend"):
+            del celery_app._local.backend
         celery_app.__dict__.pop("amqp", None)
+        # Reset eager mode so the E2E test's opt-in doesn't leak into other
+        # integration tests that rely on dispatches reaching a real broker.
+        celery_app.conf.task_always_eager = False
+        celery_app.conf.task_eager_propagates = False
 
 
 @pytest.fixture
