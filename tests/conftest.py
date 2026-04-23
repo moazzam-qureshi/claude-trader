@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -33,6 +34,21 @@ def _reset_module_singletons() -> None:
         eng._session_factory = None
     except ImportError:
         pass
+
+    # Celery's app is module-level; its broker URL is baked in at import time
+    # and its connection pool is cached on first use. If the app was already
+    # imported by a previous test, repoint it at the current env and drop the
+    # pool so the next send_task uses the new broker.
+    if "trading_sandwich.celery_app" in sys.modules:
+        from trading_sandwich.celery_app import app as celery_app
+        # conf.broker_url is a live env-backed view and already reflects the
+        # monkeypatched CELERY_BROKER_URL. But send_task publishes through
+        # app.amqp.producer_pool, and both app._pool (broker pool) and
+        # app.amqp (an @cached_property) cache a Connection bound to the URL
+        # seen at first use. Both must be cleared so the next send_task
+        # rebuilds against the current broker URL.
+        celery_app._pool = None
+        celery_app.__dict__.pop("amqp", None)
 
 
 @pytest.fixture
