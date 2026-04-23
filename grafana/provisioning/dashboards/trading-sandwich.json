@@ -1,0 +1,47 @@
+{
+  "id": null,
+  "uid": "trading-sandwich-health",
+  "title": "Trading Sandwich Health",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Candles / min (rate 5m)",
+      "targets": [{"expr": "sum(rate(ts_candles_ingested_total[5m])) * 60"}],
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Features / min",
+      "targets": [{"expr": "sum(rate(ts_features_computed_total[5m])) * 60"}],
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Signals fired / hour",
+      "targets": [{"expr": "sum(rate(ts_signals_fired_total[1h])) * 3600"}],
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Outcomes measured / hour",
+      "targets": [{"expr": "sum(rate(ts_outcomes_measured_total[1h])) * 3600"}],
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "timeseries",
+      "title": "Feature compute latency (p95)",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(ts_feature_compute_seconds_bucket[5m])) by (le, symbol))"}],
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Signals by gating outcome",
+      "targets": [{"expr": "sum by (gating_outcome) (rate(ts_signals_fired_total[5m]))"}],
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8}
+    }
+  ]
+}
