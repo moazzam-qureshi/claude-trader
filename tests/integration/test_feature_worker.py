@@ -15,20 +15,24 @@ from testcontainers.redis import RedisContainer
 def _seed_candles(async_url: str) -> datetime:
     base = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
 
+    # Phase 1 min-history enforcement: build_features_row returns None for
+    # <200 bars. This test needs at least 200 bars of warmup for any row to
+    # be written.
     async def _run() -> None:
         engine = create_async_engine(async_url)
         try:
             async with engine.begin() as conn:
-                for i in range(30):
+                for i in range(250):
                     ot = base + timedelta(minutes=i)
                     ct = ot + timedelta(minutes=1)
                     px = 100 + i * 0.5
+                    v = 10 + (i % 7) * 0.5  # varying volume so rolling-std > 0
                     await conn.execute(text(
                         "INSERT INTO raw_candles "
                         "(symbol, timeframe, open_time, close_time, open, high, low, close, volume) "
                         "VALUES (:s, :tf, :ot, :ct, :o, :h, :l, :c, :v)"
                     ), {"s": "BTCUSDT", "tf": "1m", "ot": ot, "ct": ct,
-                        "o": px, "h": px + 0.3, "l": px - 0.3, "c": px + 0.1, "v": 10})
+                        "o": px, "h": px + 0.3, "l": px - 0.3, "c": px + 0.1, "v": v})
         finally:
             await engine.dispose()
     asyncio.run(_run())
@@ -96,7 +100,7 @@ def test_compute_features_writes_row_and_dispatches_detect_signals(
         base = _seed_candles(pg_url)
 
         from trading_sandwich.features.worker import compute_features
-        close_iso = (base + timedelta(minutes=30)).isoformat()
+        close_iso = (base + timedelta(minutes=250)).isoformat()
         compute_features.run("BTCUSDT", "1m", close_iso)
 
         row = _latest_features(pg_url)
