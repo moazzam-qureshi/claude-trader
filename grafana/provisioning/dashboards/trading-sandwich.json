@@ -3,13 +3,13 @@
   "uid": "trading-sandwich-health",
   "title": "Trading Sandwich Health",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": {"from": "now-1h", "to": "now"},
+  "time": {"from": "now-6h", "to": "now"},
   "panels": [
     {
       "type": "stat",
-      "title": "Candles / min (rate 5m)",
+      "title": "Candles / min (5m rate)",
       "targets": [{"expr": "sum(rate(ts_candles_ingested_total[5m])) * 60"}],
       "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}
     },
@@ -39,9 +39,37 @@
     },
     {
       "type": "timeseries",
-      "title": "Signals by gating outcome",
+      "title": "Signals by archetype (5m rate)",
+      "targets": [{"expr": "sum by (archetype) (rate(ts_signals_fired_total[5m]))"}],
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Signals by gating outcome (5m rate)",
       "targets": [{"expr": "sum by (gating_outcome) (rate(ts_signals_fired_total[5m]))"}],
-      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8}
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Outcomes by horizon",
+      "targets": [{"expr": "sum by (horizon) (rate(ts_outcomes_measured_total[15m]))"}],
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "pgbouncer pool saturation",
+      "targets": [
+        {"expr": "pgbouncer_pools_server_active_connections", "legendFormat": "{{database}} active"},
+        {"expr": "pgbouncer_pools_server_idle_connections",   "legendFormat": "{{database}} idle"},
+        {"expr": "pgbouncer_pools_client_waiting_connections","legendFormat": "{{database}} waiting"}
+      ],
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Backfill gap-scan completeness",
+      "targets": [{"expr": "ts_backfill_completeness", "legendFormat": "{{symbol}} {{timeframe}}"}],
+      "gridPos": {"x": 0, "y": 28, "w": 24, "h": 8}
     }
   ]
 }
