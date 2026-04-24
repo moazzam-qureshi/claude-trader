@@ -68,6 +68,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    deploy:
+      replicas: 4
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "features", "-n", "features@%h", "--loglevel=info"]
 
