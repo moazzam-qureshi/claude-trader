@@ -21,7 +21,7 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        _engine = create_async_engine(get_settings().pgbouncer_url, poolclass=NullPool)
     return _engine
 
 

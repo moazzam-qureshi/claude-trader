@@ -1,24 +1,71 @@
-# Versioned policy. Every change is a commit. Every order records its policy_version
-# (git sha). Phase 0 values are minimal — most rules will be exercised from Phase 3.
-
-trading_enabled: false            # Phase 0: no orders at all
-execution_mode: paper             # paper | testnet | live
+trading_enabled: false
+execution_mode: paper
 
 universe:
   - BTCUSDT
   - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - ADAUSDT
+  - AVAXUSDT
 timeframes:
-  - 1m
   - 5m
+  - 15m
+  - 1h
+  - 4h
+  - 1d
 
-# Signal detection (Phase 0: single archetype)
+regime:
+  trend_slope_threshold_bps: 2.0
+  adx_trend_threshold: 20
+  squeeze_percentile: 20
+  expansion_percentile: 80
+
 per_archetype_confidence_threshold:
   trend_pullback: 0.70
+  squeeze_breakout: 0.70
+  divergence_rsi: 0.65
+  divergence_macd: 0.65
+  range_rejection: 0.65
+  liquidity_sweep_daily: 0.70
+  liquidity_sweep_swing: 0.65
+  funding_extreme: 0.70
 
 per_archetype_cooldown_minutes:
-  trend_pullback: 15              # short TF cooldown for Phase 0 symbol×TF grid
+  trend_pullback: 30
+  squeeze_breakout: 60
+  divergence_rsi: 30
+  divergence_macd: 30
+  range_rejection: 30
+  liquidity_sweep_daily: 60
+  liquidity_sweep_swing: 30
+  funding_extreme: 120
 
-# Execution rails (unused Phase 0; defaults for Phase 3+)
+per_symbol_funding_threshold:
+  BTCUSDT:  {long: -0.0003, short: 0.0003}
+  ETHUSDT:  {long: -0.0005, short: 0.0005}
+  SOLUSDT:  {long: -0.0010, short: 0.0010}
+  BNBUSDT:  {long: -0.0005, short: 0.0005}
+  XRPUSDT:  {long: -0.0010, short: 0.0010}
+  DOGEUSDT: {long: -0.0010, short: 0.0010}
+  ADAUSDT:  {long: -0.0010, short: 0.0010}
+  AVAXUSDT: {long: -0.0010, short: 0.0010}
+  default:  {long: -0.0005, short: 0.0005}
+
+gating:
+  dedup_window_minutes: 30
+
+outcome_horizons:
+  - "15m"
+  - "1h"
+  - "4h"
+  - "24h"
+  - "3d"
+  - "7d"
+
+# Execution rails (unused until Phase 3+)
 max_order_usd: 500
 max_open_positions_per_symbol: 1
 max_open_positions_total: 3
@@ -32,10 +79,5 @@ max_stop_distance_atr: 5.0
 default_stop_atr_multiple: 1.5
 default_rr_minimum: 1.5
 
-# Claude invocation cap (unused Phase 0; triage only — retrospect/analyze/ad_hoc exempt)
+# Claude invocation cap (unused Phase 1; Phase 2 enforces)
 claude_daily_triage_cap: 20
-
-# Outcome horizons (Phase 0 uses the short end only)
-outcome_horizons:
-  - "15m"
-  - "1h"

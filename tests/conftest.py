@@ -75,6 +75,11 @@ def env_for_postgres(monkeypatch) -> callable:
         monkeypatch.setenv("POSTGRES_DB", db)
         monkeypatch.setenv("POSTGRES_HOST", host)
         monkeypatch.setenv("POSTGRES_PORT", port)
+        # Phase 1: the runtime engine resolves through pgbouncer; tests have no
+        # real pgbouncer so PGBOUNCER_* must point at the testcontainer too so
+        # get_settings().pgbouncer_url reaches the same DB.
+        monkeypatch.setenv("PGBOUNCER_HOST", host)
+        monkeypatch.setenv("PGBOUNCER_PORT", port)
         monkeypatch.setenv("CELERY_BROKER_URL", os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0"))
         monkeypatch.setenv("CELERY_RESULT_BACKEND", os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/1"))
         _reset_module_singletons()

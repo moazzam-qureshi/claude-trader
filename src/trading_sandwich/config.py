@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     postgres_host: str
     postgres_port: int = 5432
 
+    pgbouncer_host: str = "pgbouncer"
+    pgbouncer_port: int = 6432
+
     celery_broker_url: str
     celery_result_backend: str
 
@@ -47,6 +50,13 @@ class Settings(BaseSettings):
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def pgbouncer_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.pgbouncer_host}:{self.pgbouncer_port}/{self.postgres_db}"
         )
 
 

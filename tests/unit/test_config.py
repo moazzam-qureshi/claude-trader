@@ -51,3 +51,20 @@ def test_configure_logging_emits(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "hello" in out
     assert "key" in out
+
+
+def test_pgbouncer_url_composition(monkeypatch):
+    monkeypatch.setenv("POSTGRES_USER", "trading")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
+    monkeypatch.setenv("POSTGRES_DB", "ts")
+    monkeypatch.setenv("POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("POSTGRES_PORT", "5432")
+    monkeypatch.setenv("PGBOUNCER_HOST", "pgb")
+    monkeypatch.setenv("PGBOUNCER_PORT", "7777")
+    monkeypatch.setenv("CELERY_BROKER_URL", "redis://r/0")
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://r/1")
+
+    import trading_sandwich.config as cfg
+    cfg._settings = None
+    s = cfg.Settings()
+    assert s.pgbouncer_url == "postgresql+asyncpg://trading:secret@pgb:7777/ts"
