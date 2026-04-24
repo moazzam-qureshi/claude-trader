@@ -1,13 +1,11 @@
-"""Signal worker. Celery consumer that reads recent features, runs detectors,
-applies gating (using Postgres to track last-fired per (symbol, archetype)),
-writes a signals row, and schedules outcome measurements.
+"""Signal worker. Celery consumer that reads features context, iterates the
+detector registry, applies three-stage gating, persists results, and schedules
+outcome measurement for claude_triaged signals.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 
-import yaml
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -19,52 +17,66 @@ from trading_sandwich.db.models import Features as FeaturesORM
 from trading_sandwich.db.models import Signal as SignalORM
 from trading_sandwich.logging import get_logger
 from trading_sandwich.metrics import SIGNALS_FIRED
-from trading_sandwich.signals.detectors.trend_pullback import detect_trend_pullback
+from trading_sandwich.signals.detectors import REGISTRY
+from trading_sandwich.signals.gating import gate_signal_with_db
 
 logger = get_logger(__name__)
 
-LOOKBACK = 30
-HORIZONS_SECONDS: dict[str, int] = {"15m": 15 * 60, "1h": 60 * 60}
-
-
-def _load_policy() -> dict:
-    with open("policy.yaml") as f:
-        return yaml.safe_load(f)
+LOOKBACK = 60
+HORIZONS_SECONDS: dict[str, int] = {
+    "15m": 15 * 60, "1h": 60 * 60, "4h": 4 * 60 * 60,
+    "24h": 24 * 60 * 60, "3d": 3 * 24 * 60 * 60, "7d": 7 * 24 * 60 * 60,
+}
 
 
 def _row_to_features(r: FeaturesORM) -> FeaturesRow:
     return FeaturesRow(
         symbol=r.symbol, timeframe=r.timeframe, close_time=r.close_time,
-        close_price=r.close_price, ema_21=r.ema_21, rsi_14=r.rsi_14,
-        atr_14=r.atr_14, trend_regime=r.trend_regime, vol_regime=r.vol_regime,
+        close_price=r.close_price,
+        ema_8=r.ema_8, ema_21=r.ema_21, ema_55=r.ema_55, ema_200=r.ema_200,
+        rsi_14=r.rsi_14, atr_14=r.atr_14,
+        macd_line=r.macd_line, macd_signal=r.macd_signal, macd_hist=r.macd_hist,
+        adx_14=r.adx_14, di_plus_14=r.di_plus_14, di_minus_14=r.di_minus_14,
+        stoch_rsi_k=r.stoch_rsi_k, stoch_rsi_d=r.stoch_rsi_d, roc_10=r.roc_10,
+        bb_upper=r.bb_upper, bb_middle=r.bb_middle, bb_lower=r.bb_lower, bb_width=r.bb_width,
+        keltner_upper=r.keltner_upper, keltner_middle=r.keltner_middle, keltner_lower=r.keltner_lower,
+        donchian_upper=r.donchian_upper, donchian_middle=r.donchian_middle, donchian_lower=r.donchian_lower,
+        obv=r.obv, vwap=r.vwap, volume_zscore_20=r.volume_zscore_20, mfi_14=r.mfi_14,
+        swing_high_5=r.swing_high_5, swing_low_5=r.swing_low_5,
+        pivot_p=r.pivot_p, pivot_r1=r.pivot_r1, pivot_r2=r.pivot_r2,
+        pivot_s1=r.pivot_s1, pivot_s2=r.pivot_s2,
+        prior_day_high=r.prior_day_high, prior_day_low=r.prior_day_low,
+        prior_week_high=r.prior_week_high, prior_week_low=r.prior_week_low,
+        funding_rate=r.funding_rate, funding_rate_24h_mean=r.funding_rate_24h_mean,
+        open_interest_usd=r.open_interest_usd,
+        oi_delta_1h=r.oi_delta_1h, oi_delta_24h=r.oi_delta_24h,
+        long_short_ratio=r.long_short_ratio, ob_imbalance_05=r.ob_imbalance_05,
+        ema_21_slope_bps=r.ema_21_slope_bps,
+        atr_percentile_100=r.atr_percentile_100,
+        bb_width_percentile_100=r.bb_width_percentile_100,
+        trend_regime=r.trend_regime, vol_regime=r.vol_regime,
         feature_version=r.feature_version,
     )
 
 
-async def _apply_gating(signal: Signal, policy: dict, session_factory) -> Signal:
-    threshold = Decimal(str(policy["per_archetype_confidence_threshold"][signal.archetype]))
-    if signal.confidence < threshold:
-        return signal.model_copy(update={"gating_outcome": "below_threshold"})
-
-    cooldown_min = policy["per_archetype_cooldown_minutes"][signal.archetype]
+async def _load_features(symbol: str, timeframe: str, close_time: datetime) -> list[FeaturesRow]:
+    session_factory = get_session_factory()
     async with session_factory() as session:
-        last = (await session.execute(
-            select(SignalORM.fired_at)
+        orm_rows = (await session.execute(
+            select(FeaturesORM)
             .where(
-                SignalORM.symbol == signal.symbol,
-                SignalORM.archetype == signal.archetype,
-                SignalORM.gating_outcome == "claude_triaged",
+                FeaturesORM.symbol == symbol,
+                FeaturesORM.timeframe == timeframe,
+                FeaturesORM.close_time <= close_time,
             )
-            .order_by(SignalORM.fired_at.desc())
-            .limit(1)
-        )).scalar_one_or_none()
-
-    if last is not None and signal.fired_at - last < timedelta(minutes=cooldown_min):
-        return signal.model_copy(update={"gating_outcome": "cooldown_suppressed"})
-    return signal.model_copy(update={"gating_outcome": "claude_triaged"})
+            .order_by(FeaturesORM.close_time.desc())
+            .limit(LOOKBACK)
+        )).scalars().all()
+    return [_row_to_features(r) for r in reversed(orm_rows)]
 
 
-async def _persist_signal(signal: Signal, session_factory) -> None:
+async def _persist_signal(signal: Signal) -> None:
+    session_factory = get_session_factory()
     async with session_factory() as session:
         stmt = pg_insert(SignalORM).values(
             signal_id=signal.signal_id, symbol=signal.symbol, timeframe=signal.timeframe,
@@ -82,7 +94,6 @@ async def _persist_signal(signal: Signal, session_factory) -> None:
 
 
 def _schedule_outcomes(signal: Signal) -> None:
-    # Local import avoids a circular import at module load.
     from trading_sandwich.outcomes.worker import measure_outcome as measure_outcome_task
     for horizon, secs in HORIZONS_SECONDS.items():
         measure_outcome_task.apply_async(
@@ -93,40 +104,28 @@ def _schedule_outcomes(signal: Signal) -> None:
 
 
 async def _detect_async(symbol: str, timeframe: str, close_time_iso: str) -> None:
-    session_factory = get_session_factory()
     close_time = datetime.fromisoformat(close_time_iso)
-    policy = _load_policy()
-
-    async with session_factory() as session:
-        rows = (await session.execute(
-            select(FeaturesORM)
-            .where(
-                FeaturesORM.symbol == symbol,
-                FeaturesORM.timeframe == timeframe,
-                FeaturesORM.close_time <= close_time,
-            )
-            .order_by(FeaturesORM.close_time.desc())
-            .limit(LOOKBACK)
-        )).scalars().all()
-
-    if not rows:
+    features = await _load_features(symbol, timeframe, close_time)
+    if not features:
         return
 
-    rows = list(reversed(rows))
-    features = [_row_to_features(r) for r in rows]
-
-    detected = [detect_trend_pullback(features)]
-    for sig in detected:
+    for archetype, detector_fn in REGISTRY.items():
+        try:
+            sig = detector_fn(features)
+        except Exception as exc:
+            logger.exception("detector_error", archetype=archetype, err=str(exc))
+            continue
         if sig is None:
             continue
-        gated = await _apply_gating(sig, policy, session_factory)
-        await _persist_signal(gated, session_factory)
-        if gated.gating_outcome == "claude_triaged":
-            _schedule_outcomes(gated)
+
+        gated = gate_signal_with_db(sig)
+        await _persist_signal(gated)
         SIGNALS_FIRED.labels(
             symbol=sig.symbol, timeframe=sig.timeframe,
             archetype=sig.archetype, gating_outcome=gated.gating_outcome,
         ).inc()
+        if gated.gating_outcome == "claude_triaged":
+            _schedule_outcomes(gated)
 
 
 @app.task(name="trading_sandwich.signals.worker.detect_signals")

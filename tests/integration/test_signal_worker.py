@@ -102,14 +102,19 @@ def test_detect_signals_writes_row_and_schedules_outcomes(
         detect_signals.run("BTCUSDT", "1m", close_iso)
 
         rows = _signals_rows(pg_url)
-        assert len(rows) == 1
-        assert rows[0]["archetype"] == "trend_pullback"
-        assert rows[0]["gating_outcome"] == "claude_triaged"
-        assert rows[0]["direction"] == "long"
+        # Phase 1 iterates every detector in the registry; the seeded pattern
+        # may match multiple archetypes. Assert the trend_pullback row that
+        # matches this pattern is persisted with claude_triaged gating.
+        archetype_to_outcome = {r["archetype"]: r["gating_outcome"] for r in rows}
+        assert "trend_pullback" in archetype_to_outcome
+        assert archetype_to_outcome["trend_pullback"] == "claude_triaged"
 
         messages = _drain_outcomes_queue(redis_url)
-        assert len(messages) == 2
+        # One measure_outcome task per horizon (6 in Phase 1) per triaged signal.
+        # If other detectors also triaged, we expect a multiple of 6.
+        triaged_count = sum(1 for v in archetype_to_outcome.values() if v == "claude_triaged")
+        assert len(messages) == 6 * triaged_count
         horizons = {m["args"][1] for m in messages}
-        assert horizons == {"15m", "1h"}
+        assert horizons == {"15m", "1h", "4h", "24h", "3d", "7d"}
         for m in messages:
             assert m["task"] == "trading_sandwich.outcomes.worker.measure_outcome"
