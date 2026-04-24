@@ -6,12 +6,27 @@ scrape_configs:
   - job_name: ingestor
     static_configs:
       - targets: ["ingestor:9100"]
+
   - job_name: feature-worker
     static_configs:
-      - targets: ["feature-worker:9101"]
+      - targets:
+          - "feature-worker:9101"
+          - "feature-worker:9102"
+          - "feature-worker:9103"
+          - "feature-worker:9104"
+          - "feature-worker:9105"
+          - "feature-worker:9106"
+          - "feature-worker:9107"
+          - "feature-worker:9108"
+
   - job_name: signal-worker
     static_configs:
-      - targets: ["signal-worker:9102"]
+      - targets: ["signal-worker:9121"]
+
   - job_name: outcome-worker
     static_configs:
-      - targets: ["outcome-worker:9103"]
+      - targets: ["outcome-worker:9125"]
+
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ["pgbouncer-exporter:9127"]
