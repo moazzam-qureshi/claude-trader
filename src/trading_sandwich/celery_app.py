@@ -35,6 +35,7 @@ app = Celery(
         "trading_sandwich.signals.worker",
         "trading_sandwich.outcomes.worker",
         "trading_sandwich.ingestor.rest_tasks",
+        "trading_sandwich.ingestor.backfill",
     ],
 )
 
@@ -79,6 +80,10 @@ app.conf.update(
                 "args": [s],
             }
             for s in _universe_symbols()
+        },
+        "backfill_scan_gaps": {
+            "task": "trading_sandwich.ingestor.backfill.scan_gaps",
+            "schedule": 300.0,
         },
     },
     beat_scheduler="redbeat.RedBeatScheduler",

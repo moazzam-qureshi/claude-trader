@@ -46,6 +46,12 @@ QUEUE_DEPTH = Gauge(
     ["queue"],
 )
 
+BACKFILL_COMPLETENESS = Gauge(
+    "ts_backfill_completeness",
+    "Fraction of expected candles present in last 6h (0..1)",
+    ["symbol", "timeframe"],
+)
+
 
 def start_metrics_server(port: int) -> None:
     """Start a Prometheus scrape endpoint. Call once per process."""
