@@ -20,10 +20,10 @@ def normalize_ccxt_depth(symbol: str, raw: dict) -> dict:
     cleanly and Decimal conversion is deferred to the feature-worker.
     """
     ts_ms = raw.get("timestamp")
-    if ts_ms is None:
-        captured_at = datetime.now(UTC)
-    else:
-        captured_at = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+    captured_at = (
+        datetime.now(UTC) if ts_ms is None
+        else datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+    )
 
     return {
         "symbol": symbol,
@@ -51,7 +51,7 @@ async def stream_depth(
     if testnet:
         exchange.set_sandbox_mode(True)
 
-    last_emit: dict[str, float] = {s: 0.0 for s in symbols}
+    last_emit: dict[str, float] = dict.fromkeys(symbols, 0.0)
     throttle_s = throttle_ms / 1000.0
 
     try:

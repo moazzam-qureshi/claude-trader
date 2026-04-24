@@ -54,7 +54,7 @@ app.conf.update(
         "trading_sandwich.outcomes.worker.*": {"queue": "outcomes"},
     },
     beat_schedule={
-        # Microstructure pollers — one entry per (symbol × task),
+        # Microstructure pollers — one entry per (symbol x task),
         # expanded at import time from policy.yaml.
         **{
             f"poll_funding_{s}": {

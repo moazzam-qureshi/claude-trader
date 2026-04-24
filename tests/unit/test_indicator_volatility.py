@@ -43,6 +43,6 @@ def test_keltner_middle_is_ema():
 
 def test_donchian_upper_is_rolling_max():
     df = linear_uptrend(n=50)
-    upper, middle, lower = compute_donchian(df["high"], df["low"], period=20)
+    upper, _middle, _lower = compute_donchian(df["high"], df["low"], period=20)
     expected_upper_30 = df["high"].iloc[11:31].max()
     assert abs(float(upper.iloc[30]) - expected_upper_30) < 1e-6
