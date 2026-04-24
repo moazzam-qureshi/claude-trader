@@ -47,6 +47,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       ta-lib>=0.4.32 \
       celery-redbeat>=2.2 \
       httpx>=0.27 \
+      "mcp[cli]>=1.0" \
+      anyio>=4 \
+      "discord.py>=2.4" \
       pytest>=8.2 \
       pytest-asyncio>=0.23 \
       pytest-cov>=5.0 \

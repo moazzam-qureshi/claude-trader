@@ -23,6 +23,8 @@ dependencies = [
   "ta-lib>=0.4.32",
   "celery-redbeat>=2.2",
   "httpx>=0.27",
+  "mcp[cli]>=1.0",
+  "anyio>=4",
 ]
 
 [project.optional-dependencies]
