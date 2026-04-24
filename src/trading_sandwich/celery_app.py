@@ -97,9 +97,8 @@ def _init_metrics_server(sender=None, **kwargs) -> None:
     """Each Celery worker process exposes its own /metrics on a fixed port
     chosen by queue name. Prometheus scrape config hits `<service>:<port>`.
     """
-    from trading_sandwich.metrics import start_metrics_server
-
     from trading_sandwich._metrics_port import allocate_port
+    from trading_sandwich.metrics import start_metrics_server
     hostname = (sender.hostname if sender and getattr(sender, "hostname", None) else "") or ""
     port = allocate_port(hostname.split("@")[0])
     start_metrics_server(port)
