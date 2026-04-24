@@ -37,6 +37,9 @@ app.conf.update(
         "trading_sandwich.outcomes.worker.*": {"queue": "outcomes"},
     },
     beat_schedule={},
+    beat_scheduler="redbeat.RedBeatScheduler",
+    redbeat_redis_url=settings.celery_broker_url.rsplit("/", 1)[0] + "/2",
+    redbeat_lock_timeout=300,
 )
 
 

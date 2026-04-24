@@ -100,7 +100,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    command: ["celery", "-A", "trading_sandwich.celery_app", "beat", "--loglevel=info"]
+    command: ["celery", "-A", "trading_sandwich.celery_app", "beat",
+              "--scheduler=redbeat.RedBeatScheduler", "--loglevel=info"]
 
   prometheus:
     image: prom/prometheus:v2.54.0

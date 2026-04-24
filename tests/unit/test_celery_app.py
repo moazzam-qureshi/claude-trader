@@ -10,3 +10,12 @@ def test_celery_app_configured():
 
 def test_celery_beat_schedule_has_placeholders():
     assert isinstance(app.conf.beat_schedule, dict)
+
+
+def test_redbeat_scheduler_class_set():
+    assert app.conf.beat_scheduler == "redbeat.RedBeatScheduler"
+
+
+def test_redbeat_redis_url_distinct():
+    # redbeat keys go into Redis db 2 — distinct from broker (db 0) and backend (db 1)
+    assert app.conf.redbeat_redis_url.endswith("/2")
