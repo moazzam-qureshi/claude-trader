@@ -46,6 +46,68 @@ class Features(Base):
     rsi_14: Mapped[Decimal | None] = mapped_column(Numeric)
     atr_14: Mapped[Decimal | None] = mapped_column(Numeric)
 
+    ema_8: Mapped[Decimal | None] = mapped_column(Numeric)
+    ema_55: Mapped[Decimal | None] = mapped_column(Numeric)
+    ema_200: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    macd_line: Mapped[Decimal | None] = mapped_column(Numeric)
+    macd_signal: Mapped[Decimal | None] = mapped_column(Numeric)
+    macd_hist: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    adx_14: Mapped[Decimal | None] = mapped_column(Numeric)
+    di_plus_14: Mapped[Decimal | None] = mapped_column(Numeric)
+    di_minus_14: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    stoch_rsi_k: Mapped[Decimal | None] = mapped_column(Numeric)
+    stoch_rsi_d: Mapped[Decimal | None] = mapped_column(Numeric)
+    roc_10: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    bb_upper: Mapped[Decimal | None] = mapped_column(Numeric)
+    bb_middle: Mapped[Decimal | None] = mapped_column(Numeric)
+    bb_lower: Mapped[Decimal | None] = mapped_column(Numeric)
+    bb_width: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    keltner_upper: Mapped[Decimal | None] = mapped_column(Numeric)
+    keltner_middle: Mapped[Decimal | None] = mapped_column(Numeric)
+    keltner_lower: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    donchian_upper: Mapped[Decimal | None] = mapped_column(Numeric)
+    donchian_middle: Mapped[Decimal | None] = mapped_column(Numeric)
+    donchian_lower: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    obv: Mapped[Decimal | None] = mapped_column(Numeric)
+    vwap: Mapped[Decimal | None] = mapped_column(Numeric)
+    volume_zscore_20: Mapped[Decimal | None] = mapped_column(Numeric)
+    mfi_14: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    swing_high_5: Mapped[Decimal | None] = mapped_column(Numeric)
+    swing_low_5: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    pivot_p: Mapped[Decimal | None] = mapped_column(Numeric)
+    pivot_r1: Mapped[Decimal | None] = mapped_column(Numeric)
+    pivot_r2: Mapped[Decimal | None] = mapped_column(Numeric)
+    pivot_s1: Mapped[Decimal | None] = mapped_column(Numeric)
+    pivot_s2: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    prior_day_high: Mapped[Decimal | None] = mapped_column(Numeric)
+    prior_day_low: Mapped[Decimal | None] = mapped_column(Numeric)
+    prior_week_high: Mapped[Decimal | None] = mapped_column(Numeric)
+    prior_week_low: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    funding_rate: Mapped[Decimal | None] = mapped_column(Numeric)
+    funding_rate_24h_mean: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    open_interest_usd: Mapped[Decimal | None] = mapped_column(Numeric)
+    oi_delta_1h: Mapped[Decimal | None] = mapped_column(Numeric)
+    oi_delta_24h: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    long_short_ratio: Mapped[Decimal | None] = mapped_column(Numeric)
+    ob_imbalance_05: Mapped[Decimal | None] = mapped_column(Numeric)
+
+    ema_21_slope_bps: Mapped[Decimal | None] = mapped_column(Numeric)
+    atr_percentile_100: Mapped[Decimal | None] = mapped_column(Numeric)
+    bb_width_percentile_100: Mapped[Decimal | None] = mapped_column(Numeric)
+
     trend_regime: Mapped[str | None] = mapped_column(Text)
     vol_regime: Mapped[str | None] = mapped_column(Text)
 
