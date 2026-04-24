@@ -92,3 +92,45 @@ def test_features_has_phase_1_columns(env_for_postgres):
             finally:
                 await engine.dispose()
         asyncio.run(_assert_cols())
+
+
+@pytest.mark.integration
+def test_archetype_check_constraint_rejects_unknown(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        async def _probe() -> None:
+            engine = create_async_engine(url)
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text(
+                        "INSERT INTO signals (signal_id,symbol,timeframe,archetype,"
+                        "fired_at,candle_close_time,trigger_price,direction,confidence,"
+                        "confidence_breakdown,gating_outcome,features_snapshot,"
+                        "detector_version) VALUES (gen_random_uuid(),'BTCUSDT','5m',"
+                        "'trend_pullback',now(),now(),100,'long',0.7,"
+                        "CAST('{}' AS jsonb),'below_threshold',"
+                        "CAST('{}' AS jsonb),'test')"
+                    ))
+
+                from sqlalchemy.exc import IntegrityError
+                raised = False
+                try:
+                    async with engine.begin() as conn:
+                        await conn.execute(text(
+                            "INSERT INTO signals (signal_id,symbol,timeframe,archetype,"
+                            "fired_at,candle_close_time,trigger_price,direction,confidence,"
+                            "confidence_breakdown,gating_outcome,features_snapshot,"
+                            "detector_version) VALUES (gen_random_uuid(),'BTCUSDT','5m',"
+                            "'nonexistent',now(),now(),100,'long',0.7,"
+                            "CAST('{}' AS jsonb),'below_threshold',"
+                            "CAST('{}' AS jsonb),'test')"
+                        ))
+                except IntegrityError:
+                    raised = True
+                assert raised, "CHECK constraint on signals.archetype did not fire"
+            finally:
+                await engine.dispose()
+        asyncio.run(_probe())
