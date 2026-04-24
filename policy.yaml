@@ -81,3 +81,24 @@ default_rr_minimum: 1.5
 
 # Claude invocation cap (unused Phase 1; Phase 2 enforces)
 claude_daily_triage_cap: 20
+
+# Phase 2 execution posture
+trading_enabled: false
+execution_mode: paper               # paper | live
+
+# Proposal lifecycle
+proposal_ttl_minutes: 15
+
+# Live-mode safeguards
+first_trade_size_multiplier: 0.5
+
+# Reconciliation tolerances
+reconciliation_block_tolerance:
+  position_base_drift_pct: 0.5
+  open_order_count_drift: 0
+
+# Paper adapter
+paper_starting_equity_usd: 10000
+
+# Kill-switch behaviour
+auto_flatten_on_kill: false
