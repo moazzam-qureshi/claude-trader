@@ -3685,4 +3685,2525 @@ All three should be green.
 
 ---
 
-*(Plan continues in Part 3: Tasks 26–45 cover detector implementations, three-stage gating, feature-worker overhaul, dedup integration test, outcome worker horizon expansion. Part 4 covers backfill tooling, observability, E2E, self-review, execution handoff.)*
+## Task 26: Feature-worker overhaul — orchestrate the full indicator stack
+
+**Files:**
+- Modify: `src/trading_sandwich/features/compute.py` — rewrite as an orchestrator
+- Modify: `src/trading_sandwich/features/worker.py` — call the orchestrator, pass extra raw-table reads
+- Test: `tests/integration/test_features_full_row.py`
+
+The Phase 0 `compute.py` has three functions (`compute_ema`, `compute_rsi`, `compute_atr`). Phase 1 replaces its body with an orchestrator that: (1) reads raw_candles, raw_orderbook_snapshots, raw_funding, raw_open_interest, raw_long_short_ratio, (2) computes the full indicator stack, (3) computes regime-classifier inputs, (4) runs the classifier, (5) returns a dict keyed by the 48 Phase 1 column names plus `trend_regime` / `vol_regime`.
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_features_full_row.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
+
+
+_REQUIRED_NON_NULL = [
+    "close_price", "ema_21", "rsi_14", "atr_14",
+    "ema_8", "ema_55",
+    "macd_line", "macd_signal", "macd_hist",
+    "adx_14", "di_plus_14", "di_minus_14",
+    "stoch_rsi_k", "stoch_rsi_d", "roc_10",
+    "bb_upper", "bb_middle", "bb_lower", "bb_width",
+    "keltner_upper", "keltner_middle", "keltner_lower",
+    "donchian_upper", "donchian_middle", "donchian_lower",
+    "obv", "vwap", "volume_zscore_20", "mfi_14",
+    "ema_21_slope_bps", "atr_percentile_100", "bb_width_percentile_100",
+    "trend_regime", "vol_regime",
+]
+
+
+def _seed_candles(async_url: str, n: int = 250) -> datetime:
+    """Seed n 5m candles rising linearly from 100 to 100+n*0.5."""
+    base = datetime(2026, 4, 21, 0, 0, tzinfo=UTC)
+    async def _run() -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                for i in range(n):
+                    c = 100.0 + i * 0.5
+                    ot = base + timedelta(minutes=5 * i)
+                    ct = ot + timedelta(minutes=5)
+                    await conn.execute(text(
+                        "INSERT INTO raw_candles "
+                        "(symbol,timeframe,open_time,close_time,open,high,low,close,volume) "
+                        "VALUES (:s,:tf,:ot,:ct,:o,:h,:l,:c,10)"
+                    ), {"s": "BTCUSDT", "tf": "5m", "ot": ot, "ct": ct,
+                        "o": c - 0.1, "h": c + 0.3, "l": c - 0.3, "c": c})
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+    return base
+
+
+def _latest_features(async_url: str) -> dict:
+    async def _run() -> dict:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                cols = ", ".join(_REQUIRED_NON_NULL)
+                row = (await conn.execute(text(
+                    f"SELECT {cols} FROM features "
+                    "WHERE symbol='BTCUSDT' AND timeframe='5m' "
+                    "ORDER BY close_time DESC LIMIT 1"
+                ))).one()
+                return {k: getattr(row, k) for k in _REQUIRED_NON_NULL}
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_features_row_populates_all_phase_1_columns(env_for_postgres, env_for_redis):
+    with (
+        PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg,
+        RedisContainer("redis:7-alpine") as rd,
+    ):
+        pg_url = pg.get_connection_url()
+        redis_url = f"redis://{rd.get_container_host_ip()}:{rd.get_exposed_port(6379)}/0"
+        env_for_redis(redis_url)
+        env_for_postgres(pg_url)
+
+        command.upgrade(Config("alembic.ini"), "head")
+        base = _seed_candles(pg_url, n=250)
+
+        from trading_sandwich.features.worker import compute_features
+        close_iso = (base + timedelta(minutes=5 * 250)).isoformat()
+        compute_features.run("BTCUSDT", "5m", close_iso)
+
+        row = _latest_features(pg_url)
+        for col in _REQUIRED_NON_NULL:
+            assert row[col] is not None, f"{col} should be non-null after 250-bar warmup"
+        # Linear uptrend → trend_up + normal (no squeeze, no expansion extreme)
+        assert row["trend_regime"] == "trend_up"
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_features_full_row.py -v -m integration`
+Expected: FAIL — Phase 0's worker only populates `ema_21`, `rsi_14`, `atr_14`, leaves Phase 1 columns NULL.
+
+- [ ] **Step 3: Rewrite `features/compute.py`**
+
+Replace the contents of `src/trading_sandwich/features/compute.py` with:
+```python
+"""Feature orchestrator. Pulls raw-table inputs, runs every indicator module,
+applies the regime classifier, returns a dict keyed by `features` table columns.
+
+Phase 0's 3-function API (compute_ema/compute_rsi/compute_atr) is preserved
+via re-exports from the indicator package so any remaining Phase 0 callers
+keep working without an import change.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
+
+import pandas as pd
+
+from trading_sandwich._policy import get_regime_thresholds
+from trading_sandwich.indicators.microstructure import (
+    compute_funding_24h_mean,
+    compute_ob_imbalance_05pct,
+    compute_oi_deltas,
+)
+from trading_sandwich.indicators.regime_inputs import (
+    compute_atr_percentile,
+    compute_bb_width_percentile,
+    compute_ema_slope_bps,
+)
+from trading_sandwich.indicators.structure import (
+    compute_classic_pivots,
+    compute_prior_day_hl,
+    compute_prior_week_hl,
+    compute_swing_high_low,
+)
+from trading_sandwich.indicators.trend import (
+    compute_adx,
+    compute_ema,
+    compute_macd,
+    compute_roc,
+    compute_rsi,
+    compute_stoch_rsi,
+)
+from trading_sandwich.indicators.volatility import (
+    compute_atr,
+    compute_bollinger,
+    compute_donchian,
+    compute_keltner,
+)
+from trading_sandwich.indicators.volume import (
+    compute_mfi,
+    compute_obv,
+    compute_volume_zscore,
+    compute_vwap_session,
+)
+from trading_sandwich.regime.classifier import classify
+
+__all__ = [
+    "compute_ema", "compute_rsi", "compute_atr",   # Phase 0 re-exports
+    "build_features_row",
+]
+
+
+@dataclass
+class RawInputs:
+    """Everything the orchestrator needs at compute time. Assembled by the
+    worker before calling `build_features_row`.
+    """
+    candles: pd.DataFrame            # >=200 bars, OHLCV + close_time
+    funding: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["settlement_time", "rate"]))
+    open_interest: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["captured_at", "open_interest_usd"]))
+    long_short_ratio: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=["captured_at", "ratio"]))
+    latest_ob_snapshot: dict | None = None
+
+
+def build_features_row(
+    symbol: str, timeframe: str, close_time: datetime,
+    inputs: RawInputs,
+) -> dict | None:
+    """Compute every Phase 1 indicator + regime label for the most-recent
+    candle (the one whose close_time matches `close_time`). Returns a dict
+    with keys matching the `features` table columns, or None if insufficient
+    history.
+    """
+    df = inputs.candles
+    if len(df) < 200:
+        return None
+
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    volume = df["volume"].astype(float)
+
+    # --- Trend + momentum ---
+    ema_8 = compute_ema(close, 8)
+    ema_21 = compute_ema(close, 21)
+    ema_55 = compute_ema(close, 55)
+    ema_200 = compute_ema(close, 200)
+    rsi_14 = compute_rsi(close, 14)
+    macd_line, macd_signal_s, macd_hist = compute_macd(close)
+    adx_14, di_plus_14, di_minus_14 = compute_adx(high, low, close, 14)
+    stoch_k, stoch_d = compute_stoch_rsi(close)
+    roc_10 = compute_roc(close, 10)
+
+    # --- Volatility + range ---
+    atr_14 = compute_atr(high, low, close, 14)
+    bb_up, bb_mid, bb_lo, bb_w = compute_bollinger(close, 20, 2.0)
+    kc_up, kc_mid, kc_lo = compute_keltner(high, low, close, 20, 2.0)
+    dc_up, dc_mid, dc_lo = compute_donchian(high, low, 20)
+
+    # --- Volume + flow ---
+    obv = compute_obv(close, volume)
+    vwap = compute_vwap_session(df)
+    vol_z = compute_volume_zscore(volume, 20)
+    mfi_14 = compute_mfi(high, low, close, volume, 14)
+
+    # --- Structure ---
+    swing_h, swing_l = compute_swing_high_low(high, low, 5)
+    pdh, pdl = compute_prior_day_hl(df)
+    pwh, pwl = compute_prior_week_hl(df)
+    # Classic pivots for today use the previous-day H/L/close values
+    prev_close_row = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
+    p_p, p_r1, p_r2, p_s1, p_s2 = compute_classic_pivots(
+        high=float(pdh.iloc[-1]) if pd.notna(pdh.iloc[-1]) else float(prev_close_row["high"]),
+        low=float(pdl.iloc[-1]) if pd.notna(pdl.iloc[-1]) else float(prev_close_row["low"]),
+        close=float(prev_close_row["close"]),
+    )
+
+    # --- Regime inputs ---
+    slope_bps = compute_ema_slope_bps(ema_21, window=10)
+    atr_pct_100 = compute_atr_percentile(atr_14, window=100)
+    bbw_pct_100 = compute_bb_width_percentile(bb_w, window=100)
+
+    # --- Microstructure ---
+    fr_24h_mean = compute_funding_24h_mean(inputs.funding, close_time)
+    latest_funding_rate = (
+        Decimal(str(inputs.funding["rate"].iloc[-1]))
+        if not inputs.funding.empty else None
+    )
+    latest_oi_usd = (
+        Decimal(str(inputs.open_interest["open_interest_usd"].iloc[-1]))
+        if not inputs.open_interest.empty else None
+    )
+    d_oi_1h, d_oi_24h = compute_oi_deltas(inputs.open_interest, close_time)
+    latest_lsr = (
+        Decimal(str(inputs.long_short_ratio["ratio"].iloc[-1]))
+        if not inputs.long_short_ratio.empty else None
+    )
+    ob_imb = None
+    if inputs.latest_ob_snapshot is not None and pd.notna(bb_mid.iloc[-1]):
+        ob_imb = compute_ob_imbalance_05pct(
+            inputs.latest_ob_snapshot, Decimal(str(close.iloc[-1])),
+        )
+
+    # --- Regime classification (same last-bar values feeding the detectors) ---
+    trend_regime, vol_regime = classify(
+        close=Decimal(str(close.iloc[-1])),
+        ema_55=_dec_or_none(ema_55.iloc[-1]),
+        ema_slope_bps=_float_or_none(slope_bps.iloc[-1]),
+        adx=_float_or_none(adx_14.iloc[-1]),
+        bb_width_percentile_100=_float_or_none(bbw_pct_100.iloc[-1]),
+        policy=get_regime_thresholds(),
+    )
+
+    return {
+        "symbol": symbol, "timeframe": timeframe, "close_time": close_time,
+        "close_price": Decimal(str(close.iloc[-1])),
+        "ema_8":   _dec_or_none(ema_8.iloc[-1]),
+        "ema_21":  _dec_or_none(ema_21.iloc[-1]),
+        "ema_55":  _dec_or_none(ema_55.iloc[-1]),
+        "ema_200": _dec_or_none(ema_200.iloc[-1]),
+        "rsi_14":  _dec_or_none(rsi_14.iloc[-1]),
+        "atr_14":  _dec_or_none(atr_14.iloc[-1]),
+        "macd_line":   _dec_or_none(macd_line.iloc[-1]),
+        "macd_signal": _dec_or_none(macd_signal_s.iloc[-1]),
+        "macd_hist":   _dec_or_none(macd_hist.iloc[-1]),
+        "adx_14":      _dec_or_none(adx_14.iloc[-1]),
+        "di_plus_14":  _dec_or_none(di_plus_14.iloc[-1]),
+        "di_minus_14": _dec_or_none(di_minus_14.iloc[-1]),
+        "stoch_rsi_k": _dec_or_none(stoch_k.iloc[-1]),
+        "stoch_rsi_d": _dec_or_none(stoch_d.iloc[-1]),
+        "roc_10":      _dec_or_none(roc_10.iloc[-1]),
+        "bb_upper":    _dec_or_none(bb_up.iloc[-1]),
+        "bb_middle":   _dec_or_none(bb_mid.iloc[-1]),
+        "bb_lower":    _dec_or_none(bb_lo.iloc[-1]),
+        "bb_width":    _dec_or_none(bb_w.iloc[-1]),
+        "keltner_upper":  _dec_or_none(kc_up.iloc[-1]),
+        "keltner_middle": _dec_or_none(kc_mid.iloc[-1]),
+        "keltner_lower":  _dec_or_none(kc_lo.iloc[-1]),
+        "donchian_upper":  _dec_or_none(dc_up.iloc[-1]),
+        "donchian_middle": _dec_or_none(dc_mid.iloc[-1]),
+        "donchian_lower":  _dec_or_none(dc_lo.iloc[-1]),
+        "obv":              _dec_or_none(obv.iloc[-1]),
+        "vwap":             _dec_or_none(vwap.iloc[-1]),
+        "volume_zscore_20": _dec_or_none(vol_z.iloc[-1]),
+        "mfi_14":           _dec_or_none(mfi_14.iloc[-1]),
+        "swing_high_5":     _dec_or_none(swing_h.iloc[-1]),
+        "swing_low_5":      _dec_or_none(swing_l.iloc[-1]),
+        "pivot_p":  Decimal(str(p_p)),
+        "pivot_r1": Decimal(str(p_r1)),
+        "pivot_r2": Decimal(str(p_r2)),
+        "pivot_s1": Decimal(str(p_s1)),
+        "pivot_s2": Decimal(str(p_s2)),
+        "prior_day_high":  _dec_or_none(pdh.iloc[-1]),
+        "prior_day_low":   _dec_or_none(pdl.iloc[-1]),
+        "prior_week_high": _dec_or_none(pwh.iloc[-1]),
+        "prior_week_low":  _dec_or_none(pwl.iloc[-1]),
+        "funding_rate":          latest_funding_rate,
+        "funding_rate_24h_mean": fr_24h_mean,
+        "open_interest_usd": latest_oi_usd,
+        "oi_delta_1h":       d_oi_1h,
+        "oi_delta_24h":      d_oi_24h,
+        "long_short_ratio":  latest_lsr,
+        "ob_imbalance_05":   ob_imb,
+        "ema_21_slope_bps":         _dec_or_none(slope_bps.iloc[-1]),
+        "atr_percentile_100":       _dec_or_none(atr_pct_100.iloc[-1]),
+        "bb_width_percentile_100":  _dec_or_none(bbw_pct_100.iloc[-1]),
+        "trend_regime": trend_regime,
+        "vol_regime":   vol_regime,
+    }
+
+
+def _dec_or_none(x) -> Decimal | None:
+    if pd.isna(x):
+        return None
+    return Decimal(str(float(x)))
+
+
+def _float_or_none(x) -> float | None:
+    if pd.isna(x):
+        return None
+    return float(x)
+```
+
+- [ ] **Step 4: Rewrite `features/worker.py` to load all raw tables and call the orchestrator**
+
+Replace the body of `src/trading_sandwich/features/worker.py` with:
+```python
+"""Feature worker. Celery consumer that assembles RawInputs from all the
+raw-data tables, invokes the orchestrator, upserts a features row, and
+dispatches signal detection.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime, timedelta
+
+import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from trading_sandwich._async import run_coro
+from trading_sandwich.celery_app import app
+from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models import (
+    Features,
+    RawCandle,
+    RawFunding,
+    RawLongShortRatio,
+    RawOpenInterest,
+    RawOrderbookSnapshot,
+)
+from trading_sandwich.features.compute import RawInputs, build_features_row
+from trading_sandwich.logging import get_logger
+from trading_sandwich.metrics import FEATURE_COMPUTE_SECONDS, FEATURES_COMPUTED
+
+logger = get_logger(__name__)
+
+WINDOW_SIZE = 500
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_FEATURE_VERSION = _git_sha()
+
+
+async def _load_raw_inputs(
+    session_factory, symbol: str, timeframe: str, close_time: datetime,
+) -> RawInputs | None:
+    async with session_factory() as session:
+        candle_rows = (await session.execute(
+            select(RawCandle)
+            .where(
+                RawCandle.symbol == symbol,
+                RawCandle.timeframe == timeframe,
+                RawCandle.close_time <= close_time,
+            )
+            .order_by(RawCandle.close_time.desc())
+            .limit(WINDOW_SIZE)
+        )).scalars().all()
+
+        if len(candle_rows) < 200:
+            return None
+
+        funding_rows = (await session.execute(
+            select(RawFunding)
+            .where(
+                RawFunding.symbol == symbol,
+                RawFunding.settlement_time <= close_time,
+                RawFunding.settlement_time >= close_time - timedelta(hours=30),
+            )
+            .order_by(RawFunding.settlement_time.asc())
+        )).scalars().all()
+
+        oi_rows = (await session.execute(
+            select(RawOpenInterest)
+            .where(
+                RawOpenInterest.symbol == symbol,
+                RawOpenInterest.captured_at <= close_time,
+                RawOpenInterest.captured_at >= close_time - timedelta(hours=26),
+            )
+            .order_by(RawOpenInterest.captured_at.asc())
+        )).scalars().all()
+
+        lsr_rows = (await session.execute(
+            select(RawLongShortRatio)
+            .where(
+                RawLongShortRatio.symbol == symbol,
+                RawLongShortRatio.captured_at <= close_time,
+            )
+            .order_by(RawLongShortRatio.captured_at.desc())
+            .limit(1)
+        )).scalars().all()
+
+        ob = (await session.execute(
+            select(RawOrderbookSnapshot)
+            .where(
+                RawOrderbookSnapshot.symbol == symbol,
+                RawOrderbookSnapshot.captured_at <= close_time,
+            )
+            .order_by(RawOrderbookSnapshot.captured_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+
+    candles = list(reversed(candle_rows))
+    return RawInputs(
+        candles=pd.DataFrame([{
+            "close_time": r.close_time,
+            "open": float(r.open), "high": float(r.high),
+            "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
+        } for r in candles]),
+        funding=pd.DataFrame([{"settlement_time": r.settlement_time, "rate": r.rate} for r in funding_rows]),
+        open_interest=pd.DataFrame([{"captured_at": r.captured_at, "open_interest_usd": r.open_interest_usd} for r in oi_rows]),
+        long_short_ratio=pd.DataFrame([{"captured_at": r.captured_at, "ratio": r.ratio} for r in lsr_rows]),
+        latest_ob_snapshot=(
+            {"bids": ob.bids, "asks": ob.asks} if ob is not None else None
+        ),
+    )
+
+
+async def _compute_async(symbol: str, timeframe: str, close_time_iso: str) -> None:
+    session_factory = get_session_factory()
+    close_time = datetime.fromisoformat(close_time_iso)
+
+    inputs = await _load_raw_inputs(session_factory, symbol, timeframe, close_time)
+    if inputs is None:
+        logger.info("compute_features_insufficient_history",
+                    symbol=symbol, tf=timeframe)
+        return
+
+    row = build_features_row(symbol, timeframe, close_time, inputs)
+    if row is None:
+        return
+
+    row["feature_version"] = _FEATURE_VERSION
+
+    async with session_factory() as session:
+        update_cols = {k: v for k, v in row.items()
+                       if k not in ("symbol", "timeframe", "close_time")}
+        stmt = pg_insert(Features).values(**row).on_conflict_do_update(
+            index_elements=["symbol", "timeframe", "close_time"],
+            set_=update_cols,
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+    FEATURES_COMPUTED.labels(symbol=symbol, timeframe=timeframe).inc()
+    logger.info("features_computed", symbol=symbol, tf=timeframe,
+                close_time=close_time_iso,
+                trend_regime=row["trend_regime"], vol_regime=row["vol_regime"])
+
+    from trading_sandwich.signals.worker import detect_signals as detect_signals_task
+    detect_signals_task.apply_async(
+        args=[symbol, timeframe, close_time_iso], queue="signals",
+    )
+
+
+@app.task(name="trading_sandwich.features.worker.compute_features")
+def compute_features(symbol: str, timeframe: str, close_time_iso: str) -> None:
+    with FEATURE_COMPUTE_SECONDS.labels(symbol=symbol, timeframe=timeframe).time():
+        run_coro(_compute_async(symbol, timeframe, close_time_iso))
+```
+
+- [ ] **Step 5: Run tests — migrations + full-row + previously-green Phase 0 worker test**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_features_full_row.py tests/integration/test_feature_worker.py -v -m integration`
+Expected: both PASS. Phase 0's `test_feature_worker.py` still passes because `build_features_row` returns the same-shape dict it used to, just with more keys.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/trading_sandwich/features/compute.py src/trading_sandwich/features/worker.py tests/integration/test_features_full_row.py
+git commit -m "feat: feature worker computes full 48-column Phase 1 row + regime labels"
+```
+
+---
+
+## Task 27: Detector registry + extended Phase 0 `trend_pullback` for Phase 1 regime gating
+
+**Files:**
+- Modify: `src/trading_sandwich/signals/detectors/__init__.py` — registry
+- Modify: `src/trading_sandwich/signals/detectors/trend_pullback.py` — add regime gate
+- Test: extend `tests/unit/test_detector_trend_pullback.py`
+
+Phase 0's `trend_pullback` fires regardless of regime label. Phase 1 tightens the gate: must be `trend_up`/`trend_down` AND `normal`/`expansion`. Detector returns `None` otherwise.
+
+- [ ] **Step 1: Extend trend_pullback tests with regime gate**
+
+Append to `tests/unit/test_detector_trend_pullback.py`:
+```python
+def test_does_not_fire_when_regime_is_range():
+    # Same pattern that fires in test_fires_on_clean_pullback, but with regime
+    # inputs forced to `range`
+    rows = make_features_series(n=35, close_slope=0.5, rsi_values=[45]*30 + [35]*3 + [42]*2)
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": rows[-2].close_price + Decimal("1.5"),
+        "rsi_14": Decimal("42"),
+        "ema_21": rows[-1].close_price - Decimal("0.5"),
+        "trend_regime": "range",
+        "vol_regime": "normal",
+    })
+    rows[-2] = rows[-2].model_copy(update={
+        "rsi_14": Decimal("35"), "close_price": rows[-2].ema_21,
+        "trend_regime": "range", "vol_regime": "normal",
+    })
+    rows[-3] = rows[-3].model_copy(update={
+        "rsi_14": Decimal("38"),
+        "trend_regime": "range", "vol_regime": "normal",
+    })
+    assert detect_trend_pullback(rows) is None
+
+
+def test_does_not_fire_when_vol_regime_is_squeeze():
+    rows = make_features_series(n=35, close_slope=0.5, rsi_values=[45]*30 + [35]*3 + [42]*2)
+    for r_idx in (-1, -2, -3):
+        rows[r_idx] = rows[r_idx].model_copy(update={
+            "trend_regime": "trend_up", "vol_regime": "squeeze",
+        })
+    # Also apply the pattern that would otherwise fire
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": rows[-2].close_price + Decimal("1.5"),
+        "rsi_14": Decimal("42"),
+        "ema_21": rows[-1].close_price - Decimal("0.5"),
+        "vol_regime": "squeeze",
+    })
+    rows[-2] = rows[-2].model_copy(update={
+        "rsi_14": Decimal("35"), "close_price": rows[-2].ema_21,
+        "vol_regime": "squeeze",
+    })
+    assert detect_trend_pullback(rows) is None
+```
+
+Also modify `tests/unit/_fakers.py` so the faker produces rows labeled `trend_up`/`normal` by default (Phase 1 rows always have regimes):
+```python
+# In tests/unit/_fakers.py, inside make_features_series loop, set:
+        rows.append(FeaturesRow(
+            symbol=symbol, timeframe=timeframe,
+            close_time=start + timedelta(minutes=i),
+            close_price=Decimal(str(round(close, 4))),
+            ema_21=Decimal(str(round(close + ema_offset, 4))),
+            rsi_14=Decimal(str(round(rsi, 2))),
+            atr_14=Decimal(str(round(atr, 4))),
+            trend_regime="trend_up",
+            vol_regime="normal",
+            feature_version="test",
+        ))
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_trend_pullback.py -v`
+Expected: new tests FAIL.
+
+- [ ] **Step 3: Add regime gate to `trend_pullback.py`**
+
+In `src/trading_sandwich/signals/detectors/trend_pullback.py`, at the top of `detect_trend_pullback` (after the `MIN_HISTORY` check), add:
+```python
+    if current.trend_regime not in ("trend_up", "trend_down"):
+        return None
+    if current.vol_regime not in ("normal", "expansion"):
+        return None
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_trend_pullback.py -v`
+Expected: all PASS.
+
+- [ ] **Step 5: Create detector registry**
+
+Replace `src/trading_sandwich/signals/detectors/__init__.py` with:
+```python
+"""Detector registry. Tasks 28-34 add one entry per new detector. The signal
+worker iterates this dict on every features close.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+from trading_sandwich.signals.detectors.trend_pullback import detect_trend_pullback
+
+DetectorFn = Callable[[list[FeaturesRow]], Signal | None]
+
+REGISTRY: dict[str, DetectorFn] = {
+    "trend_pullback": detect_trend_pullback,
+}
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/trading_sandwich/signals/detectors/__init__.py src/trading_sandwich/signals/detectors/trend_pullback.py tests/unit/_fakers.py tests/unit/test_detector_trend_pullback.py
+git commit -m "feat: detector registry + regime gate on trend_pullback"
+```
+
+---
+
+## Task 28: `squeeze_breakout` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/squeeze_breakout.py`
+- Create: `tests/unit/test_detector_squeeze_breakout.py`
+- Modify: `src/trading_sandwich/signals/detectors/__init__.py` — register
+
+Spec §5.1: fires when `vol_regime` transitions `squeeze` → `expansion` AND close held outside BB for 2 consecutive bars.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_squeeze_breakout.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.squeeze_breakout import detect_squeeze_breakout
+
+
+def _apply_regime(rows, idx, trend, vol):
+    rows[idx] = rows[idx].model_copy(update={"trend_regime": trend, "vol_regime": vol})
+
+
+def test_fires_on_confirmed_upside_breakout():
+    rows = make_features_series(n=30, close_slope=0.2, atr=1.0)
+    # Set up: bars 0..27 = squeeze, bar 28 close above bb_upper, bar 29 ALSO above bb_upper
+    for i in range(28):
+        _apply_regime(rows, i, "range", "squeeze")
+        rows[i] = rows[i].model_copy(update={
+            "bb_upper": Decimal("100"), "bb_lower": Decimal("99"), "bb_middle": Decimal("99.5"),
+        })
+    # Transition to expansion, with close > bb_upper on both confirmation bars
+    for i, close in ((28, 102), (29, 103)):
+        rows[i] = rows[i].model_copy(update={
+            "trend_regime": "range", "vol_regime": "expansion",
+            "close_price": Decimal(str(close)),
+            "bb_upper": Decimal("100"), "bb_lower": Decimal("99"), "bb_middle": Decimal("99.5"),
+        })
+
+    s = detect_squeeze_breakout(rows)
+    assert s is not None
+    assert s.direction == "long"
+    assert s.archetype == "squeeze_breakout"
+
+
+def test_does_not_fire_without_confirmation_bar():
+    rows = make_features_series(n=30, close_slope=0.2, atr=1.0)
+    for i in range(29):
+        _apply_regime(rows, i, "range", "squeeze")
+        rows[i] = rows[i].model_copy(update={
+            "bb_upper": Decimal("100"), "bb_lower": Decimal("99"), "bb_middle": Decimal("99.5"),
+        })
+    rows[29] = rows[29].model_copy(update={
+        "trend_regime": "range", "vol_regime": "expansion",
+        "close_price": Decimal("102"),
+        "bb_upper": Decimal("100"), "bb_lower": Decimal("99"), "bb_middle": Decimal("99.5"),
+    })
+    # Only one bar above → no confirmation
+    assert detect_squeeze_breakout(rows) is None
+
+
+def test_fires_on_downside_breakout():
+    rows = make_features_series(n=30, close_slope=0.2, atr=1.0)
+    for i in range(28):
+        _apply_regime(rows, i, "range", "squeeze")
+        rows[i] = rows[i].model_copy(update={
+            "bb_upper": Decimal("101"), "bb_lower": Decimal("100"), "bb_middle": Decimal("100.5"),
+        })
+    for i, close in ((28, 98), (29, 97)):
+        rows[i] = rows[i].model_copy(update={
+            "trend_regime": "range", "vol_regime": "expansion",
+            "close_price": Decimal(str(close)),
+            "bb_upper": Decimal("101"), "bb_lower": Decimal("100"), "bb_middle": Decimal("100.5"),
+        })
+    s = detect_squeeze_breakout(rows)
+    assert s is not None
+    assert s.direction == "short"
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_squeeze_breakout.py -v`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/signals/detectors/squeeze_breakout.py`:
+```python
+"""squeeze_breakout detector.
+
+Fires when:
+  - The prior few bars had vol_regime == 'squeeze'.
+  - The current bar has vol_regime == 'expansion'.
+  - Close has been outside the Bollinger band for the last 2 bars in the same
+    direction (confirmation bar).
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 50
+SQUEEZE_LOOKBACK = 5   # how far back we require squeeze regime to have been
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_squeeze_breakout(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+
+    current = rows[-1]
+    prev = rows[-2]
+
+    if current.vol_regime != "expansion":
+        return None
+
+    # At least one of the recent bars prior to the breakout must have been in squeeze
+    prior_window = rows[-SQUEEZE_LOOKBACK - 2:-2]
+    if not any(r.vol_regime == "squeeze" for r in prior_window):
+        return None
+
+    # Need BB bounds on both confirmation bars
+    if any(getattr(r, attr) is None for r in (current, prev)
+           for attr in ("bb_upper", "bb_lower", "atr_14")):
+        return None
+
+    direction: str | None = None
+    if current.close_price > current.bb_upper and prev.close_price > prev.bb_upper:
+        direction = "long"
+    elif current.close_price < current.bb_lower and prev.close_price < prev.bb_lower:
+        direction = "short"
+    if direction is None:
+        return None
+
+    # Stop / target: 1.5·ATR stop, 3·ATR target (symmetric)
+    atr = current.atr_14
+    if direction == "long":
+        stop = current.close_price - atr * Decimal("1.5")
+        target = current.close_price + atr * Decimal("3.0")
+    else:
+        stop = current.close_price + atr * Decimal("1.5")
+        target = current.close_price - atr * Decimal("3.0")
+    rr = abs(target - current.close_price) / abs(current.close_price - stop)
+
+    confidence = Decimal("0.8")  # crisp pattern; tighter than divergence/range_rejection
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=current.symbol, timeframe=current.timeframe,
+        archetype="squeeze_breakout",
+        fired_at=datetime.now(UTC),
+        candle_close_time=current.close_time,
+        trigger_price=current.close_price,
+        direction=direction,
+        confidence=confidence,
+        confidence_breakdown={
+            "squeeze_present": 0.4,
+            "breakout_direction": 0.3,
+            "confirmation_bar": 0.3,
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=current.model_dump(mode="json"),
+        stop_price=stop,
+        target_price=target,
+        rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+- [ ] **Step 4: Register detector**
+
+In `src/trading_sandwich/signals/detectors/__init__.py`, add:
+```python
+from trading_sandwich.signals.detectors.squeeze_breakout import detect_squeeze_breakout
+
+REGISTRY["squeeze_breakout"] = detect_squeeze_breakout
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_squeeze_breakout.py -v`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/trading_sandwich/signals/detectors/squeeze_breakout.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_squeeze_breakout.py
+git commit -m "feat: add squeeze_breakout detector (confirmation-bar gated)"
+```
+
+---
+
+## Task 29: `divergence_rsi` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/divergence_rsi.py`
+- Create: `tests/unit/test_detector_divergence_rsi.py`
+- Modify: `src/trading_sandwich/signals/detectors/__init__.py`
+
+Bullish divergence: price makes a lower low while RSI makes a higher low (between the 2 most recent local lows in an N-bar window). Bearish divergence is the mirror. Phase 1 uses a 20-bar lookback and requires both pivots to have a minimum bar-spacing of 5 bars.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_divergence_rsi.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.divergence_rsi import detect_divergence_rsi
+
+
+def test_fires_on_bullish_divergence():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    # Configure two price lows: earlier lower low, later higher low; RSI inverse.
+    # Force regime = trend_down so bullish divergence (counter-trend long) fires.
+    for i, (c, r) in enumerate([
+        (100, 50), (99, 48), (95, 32), (94, 28),  # i=0..3 — price down, RSI down
+        (96, 36), (97, 40), (98, 44),             # i=4..6 — recovery
+        (96, 42), (95, 40), (94, 38),             # i=7..9 — second, lower price low
+        (93, 42), (94, 46), (95, 48), (96, 52),   # i=10..13 — RSI higher than before
+        (97, 54), (98, 56), (99, 58),
+        (100, 60), (101, 62), (102, 64), (103, 66),
+        (104, 68), (105, 70), (104, 68), (103, 66),
+        (102, 64), (101, 62), (100, 60), (99, 58),
+        (98, 56), (97, 54),
+    ]):
+        rows[i] = rows[i].model_copy(update={
+            "close_price": Decimal(str(c)),
+            "rsi_14": Decimal(str(r)),
+            "trend_regime": "trend_down",
+            "vol_regime": "normal",
+        })
+    # Place the bullish-divergence confirmation on the last bar
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": Decimal("98"),
+        "rsi_14": Decimal("58"),    # higher RSI than the earlier low ~28
+        "trend_regime": "trend_down", "vol_regime": "normal",
+    })
+    s = detect_divergence_rsi(rows)
+    assert s is not None
+    assert s.direction == "long"
+    assert s.archetype == "divergence_rsi"
+
+
+def test_does_not_fire_in_squeeze():
+    rows = make_features_series(n=30, close_slope=-0.3, atr=1.0)
+    for r in rows:
+        pass  # faker gives trend_up/normal by default
+    rows[-1] = rows[-1].model_copy(update={"vol_regime": "squeeze", "trend_regime": "range"})
+    assert detect_divergence_rsi(rows) is None
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_divergence_rsi.py -v`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/signals/detectors/divergence_rsi.py`:
+```python
+"""divergence_rsi detector — classic bullish/bearish RSI divergence over a
+20-bar lookback. Counter-trend: long in trend_down, short in trend_up.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 40
+LOOKBACK = 20
+MIN_PIVOT_SPACING = 5
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_divergence_rsi(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+
+    current = rows[-1]
+    if current.vol_regime not in ("normal", "expansion"):
+        return None
+    if current.rsi_14 is None or current.atr_14 is None:
+        return None
+
+    window = rows[-LOOKBACK:]
+    # Find two lowest-price indices at least MIN_PIVOT_SPACING apart
+    prices = [(i, float(r.close_price)) for i, r in enumerate(window)]
+    rsis = [(i, float(r.rsi_14)) for i, r in enumerate(window) if r.rsi_14 is not None]
+    if len(rsis) < 2:
+        return None
+
+    # Bullish divergence (long in trend_down): later price low is LOWER than
+    # earlier price low, but corresponding RSI is HIGHER.
+    # Find the two smallest-price points, ordered by index.
+    sorted_by_price = sorted(prices, key=lambda t: t[1])
+    cand_bull = _find_divergence_pair(sorted_by_price, window, kind="low",
+                                      later_price_lower=True,
+                                      later_rsi_higher=True)
+    sorted_by_price_desc = sorted(prices, key=lambda t: -t[1])
+    cand_bear = _find_divergence_pair(sorted_by_price_desc, window, kind="high",
+                                      later_price_lower=False,
+                                      later_rsi_higher=False)
+
+    signal: Signal | None = None
+    if cand_bull is not None and current.trend_regime == "trend_down":
+        signal = _build_signal(current, direction="long", reason=cand_bull)
+    elif cand_bear is not None and current.trend_regime == "trend_up":
+        signal = _build_signal(current, direction="short", reason=cand_bear)
+    return signal
+
+
+def _find_divergence_pair(sorted_pts, window, kind, later_price_lower, later_rsi_higher):
+    for i, (idx_a, price_a) in enumerate(sorted_pts):
+        for idx_b, price_b in sorted_pts[i + 1:]:
+            earlier, later = (idx_a, idx_b) if idx_a < idx_b else (idx_b, idx_a)
+            if later - earlier < MIN_PIVOT_SPACING:
+                continue
+            p_earlier = float(window[earlier].close_price)
+            p_later = float(window[later].close_price)
+            r_earlier = float(window[earlier].rsi_14) if window[earlier].rsi_14 is not None else None
+            r_later = float(window[later].rsi_14) if window[later].rsi_14 is not None else None
+            if r_earlier is None or r_later is None:
+                continue
+            if later_price_lower and p_later >= p_earlier:
+                continue
+            if not later_price_lower and p_later <= p_earlier:
+                continue
+            if later_rsi_higher and r_later <= r_earlier:
+                continue
+            if not later_rsi_higher and r_later >= r_earlier:
+                continue
+            # Only signal if the 'later' is close to the most recent bar
+            if later < len(window) - 3:
+                continue
+            return {"earlier": earlier, "later": later,
+                    "p_earlier": p_earlier, "p_later": p_later,
+                    "r_earlier": r_earlier, "r_later": r_later}
+    return None
+
+
+def _build_signal(current: FeaturesRow, direction: str, reason: dict) -> Signal:
+    atr = current.atr_14
+    if direction == "long":
+        stop = current.close_price - atr * Decimal("1.5")
+        target = current.close_price + atr * Decimal("3.0")
+    else:
+        stop = current.close_price + atr * Decimal("1.5")
+        target = current.close_price - atr * Decimal("3.0")
+    rr = abs(target - current.close_price) / abs(current.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=current.symbol, timeframe=current.timeframe,
+        archetype="divergence_rsi",
+        fired_at=datetime.now(UTC),
+        candle_close_time=current.close_time,
+        trigger_price=current.close_price,
+        direction=direction,
+        confidence=Decimal("0.7"),
+        confidence_breakdown={
+            "earlier_price": reason["p_earlier"], "later_price": reason["p_later"],
+            "earlier_rsi": reason["r_earlier"],   "later_rsi":   reason["r_later"],
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=current.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+- [ ] **Step 4: Register**
+
+In `signals/detectors/__init__.py` add:
+```python
+from trading_sandwich.signals.detectors.divergence_rsi import detect_divergence_rsi
+REGISTRY["divergence_rsi"] = detect_divergence_rsi
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_divergence_rsi.py -v`
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/trading_sandwich/signals/detectors/divergence_rsi.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_divergence_rsi.py
+git commit -m "feat: add divergence_rsi detector (counter-trend)"
+```
+
+---
+
+## Task 30: `divergence_macd` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/divergence_macd.py`
+- Create: `tests/unit/test_detector_divergence_macd.py`
+- Modify: `signals/detectors/__init__.py`
+
+Same shape as `divergence_rsi` but uses MACD histogram as the oscillator. Since the math is near-duplicate, factor the divergence-finding logic into a shared helper to stay DRY.
+
+- [ ] **Step 1: Extract shared divergence helper**
+
+Create `src/trading_sandwich/signals/detectors/_divergence_core.py`:
+```python
+"""Shared divergence-pair finder for divergence_rsi + divergence_macd."""
+from __future__ import annotations
+
+from trading_sandwich.contracts.models import FeaturesRow
+
+MIN_PIVOT_SPACING = 5
+
+
+def find_divergence_pair(
+    window: list[FeaturesRow],
+    *,
+    oscillator_attr: str,
+    kind: str,                  # "low" (bullish) or "high" (bearish)
+) -> dict | None:
+    prices = [(i, float(r.close_price)) for i, r in enumerate(window)]
+    osc = [(i, float(getattr(r, oscillator_attr)))
+           for i, r in enumerate(window)
+           if getattr(r, oscillator_attr) is not None]
+    if len(osc) < 2:
+        return None
+
+    later_price_lower = (kind == "low")
+    later_osc_higher = (kind == "low")
+
+    sorted_pts = (
+        sorted(prices, key=lambda t: t[1]) if kind == "low"
+        else sorted(prices, key=lambda t: -t[1])
+    )
+
+    for i, (idx_a, _pa) in enumerate(sorted_pts):
+        for idx_b, _pb in sorted_pts[i + 1:]:
+            earlier, later = sorted([idx_a, idx_b])
+            if later - earlier < MIN_PIVOT_SPACING:
+                continue
+            p_earlier = float(window[earlier].close_price)
+            p_later = float(window[later].close_price)
+            r_earlier = getattr(window[earlier], oscillator_attr)
+            r_later = getattr(window[later], oscillator_attr)
+            if r_earlier is None or r_later is None:
+                continue
+            r_earlier = float(r_earlier); r_later = float(r_later)
+            if later_price_lower and p_later >= p_earlier:
+                continue
+            if not later_price_lower and p_later <= p_earlier:
+                continue
+            if later_osc_higher and r_later <= r_earlier:
+                continue
+            if not later_osc_higher and r_later >= r_earlier:
+                continue
+            if later < len(window) - 3:
+                continue
+            return {
+                "earlier": earlier, "later": later,
+                "p_earlier": p_earlier, "p_later": p_later,
+                "osc_earlier": r_earlier, "osc_later": r_later,
+            }
+    return None
+```
+
+- [ ] **Step 2: Refactor `divergence_rsi.py` to use the helper**
+
+Replace the body of `_find_divergence_pair` and the two call sites in `detect_divergence_rsi` with:
+```python
+from trading_sandwich.signals.detectors._divergence_core import find_divergence_pair
+
+# … inside detect_divergence_rsi, replace the cand_bull / cand_bear calls with:
+window = rows[-LOOKBACK:]
+cand_bull = find_divergence_pair(window, oscillator_attr="rsi_14", kind="low")
+cand_bear = find_divergence_pair(window, oscillator_attr="rsi_14", kind="high")
+
+# And rename the `reason["r_*"]` keys to `reason["osc_*"]` in `_build_signal`
+```
+
+- [ ] **Step 3: Run the rsi divergence tests — still green after refactor**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_divergence_rsi.py -v`
+Expected: all PASS.
+
+- [ ] **Step 4: Write failing tests for MACD variant**
+
+Create `tests/unit/test_detector_divergence_macd.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.divergence_macd import detect_divergence_macd
+
+
+def test_fires_on_bearish_macd_divergence_in_uptrend():
+    rows = make_features_series(n=30, close_slope=0.3, atr=1.0)
+    # Force bearish divergence: price makes higher high, MACD hist makes lower high
+    seq = [
+        (100, 0.5), (101, 0.6), (103, 0.9), (105, 1.2), (107, 1.5),     # rising
+        (106, 1.2), (108, 1.0), (110, 0.8),       # price HH, MACD hist lower
+        (109, 0.7), (110.5, 0.65), (111, 0.6),    # confirm on last bar
+    ]
+    for i, (c, m) in enumerate(seq):
+        rows[i] = rows[i].model_copy(update={
+            "close_price": Decimal(str(c)),
+            "macd_hist": Decimal(str(m)),
+            "trend_regime": "trend_up",
+            "vol_regime": "normal",
+        })
+    # Fill bar -1 as the confirmation with price > earlier high, macd hist < earlier high's hist
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": Decimal("112"), "macd_hist": Decimal("0.5"),
+        "trend_regime": "trend_up", "vol_regime": "normal",
+    })
+    s = detect_divergence_macd(rows)
+    assert s is not None
+    assert s.direction == "short"
+```
+
+- [ ] **Step 5: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_divergence_macd.py -v`
+Expected: FAIL.
+
+- [ ] **Step 6: Implement**
+
+Create `src/trading_sandwich/signals/detectors/divergence_macd.py`:
+```python
+"""divergence_macd detector — same rule shape as divergence_rsi but uses the
+MACD histogram as the oscillator.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+from trading_sandwich.signals.detectors._divergence_core import find_divergence_pair
+
+MIN_HISTORY = 40
+LOOKBACK = 20
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_divergence_macd(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+    current = rows[-1]
+    if current.vol_regime not in ("normal", "expansion") or current.atr_14 is None:
+        return None
+    if current.macd_hist is None:
+        return None
+
+    window = rows[-LOOKBACK:]
+    cand_bull = find_divergence_pair(window, oscillator_attr="macd_hist", kind="low")
+    cand_bear = find_divergence_pair(window, oscillator_attr="macd_hist", kind="high")
+
+    if cand_bull is not None and current.trend_regime == "trend_down":
+        return _build(current, "long", cand_bull)
+    if cand_bear is not None and current.trend_regime == "trend_up":
+        return _build(current, "short", cand_bear)
+    return None
+
+
+def _build(current: FeaturesRow, direction: str, reason: dict) -> Signal:
+    atr = current.atr_14
+    if direction == "long":
+        stop = current.close_price - atr * Decimal("1.5")
+        target = current.close_price + atr * Decimal("3.0")
+    else:
+        stop = current.close_price + atr * Decimal("1.5")
+        target = current.close_price - atr * Decimal("3.0")
+    rr = abs(target - current.close_price) / abs(current.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=current.symbol, timeframe=current.timeframe,
+        archetype="divergence_macd",
+        fired_at=datetime.now(UTC),
+        candle_close_time=current.close_time,
+        trigger_price=current.close_price, direction=direction,
+        confidence=Decimal("0.7"),
+        confidence_breakdown={
+            "earlier_price": reason["p_earlier"], "later_price": reason["p_later"],
+            "earlier_macd_hist": reason["osc_earlier"], "later_macd_hist": reason["osc_later"],
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=current.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+- [ ] **Step 7: Register**
+
+In `signals/detectors/__init__.py`:
+```python
+from trading_sandwich.signals.detectors.divergence_macd import detect_divergence_macd
+REGISTRY["divergence_macd"] = detect_divergence_macd
+```
+
+- [ ] **Step 8: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_divergence_macd.py -v`
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/trading_sandwich/signals/detectors/_divergence_core.py src/trading_sandwich/signals/detectors/divergence_macd.py src/trading_sandwich/signals/detectors/divergence_rsi.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_divergence_macd.py
+git commit -m "feat: add divergence_macd detector + refactor shared divergence core"
+```
+
+---
+
+## Task 31: `range_rejection` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/range_rejection.py`
+- Create: `tests/unit/test_detector_range_rejection.py`
+- Modify: `signals/detectors/__init__.py`
+
+Spec §5.1: fires only in `trend_regime==range` AND `vol_regime==normal`. Long on bounce off Donchian-20 lower (wick touches AND closes back inside). Short on rejection at Donchian-20 upper (same rule).
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_range_rejection.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.range_rejection import detect_range_rejection
+
+
+def test_fires_on_range_low_rejection():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    # Pin Donchian bounds so bar -1 wicks the lower and closes back inside
+    for r in rows:
+        pass  # faker default
+    for i in range(len(rows)):
+        rows[i] = rows[i].model_copy(update={
+            "donchian_upper": Decimal("110"),
+            "donchian_lower": Decimal("95"),
+            "trend_regime": "range", "vol_regime": "normal",
+        })
+    rows[-2] = rows[-2].model_copy(update={"close_price": Decimal("96")})
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": Decimal("97"),      # closed back inside range
+        "swing_low_5": Decimal("94.5"),    # wick touched ≤ 95 earlier
+    })
+    # The detector reads swing_low_5 as the wick indicator; we've set it to dip below 95.
+    s = detect_range_rejection(rows)
+    assert s is not None
+    assert s.direction == "long"
+    assert s.archetype == "range_rejection"
+
+
+def test_fires_on_range_high_rejection():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    for i in range(len(rows)):
+        rows[i] = rows[i].model_copy(update={
+            "donchian_upper": Decimal("110"),
+            "donchian_lower": Decimal("95"),
+            "trend_regime": "range", "vol_regime": "normal",
+        })
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": Decimal("108"),     # closed back inside range
+        "swing_high_5": Decimal("110.5"),  # wicked above 110
+    })
+    s = detect_range_rejection(rows)
+    assert s is not None
+    assert s.direction == "short"
+
+
+def test_no_fire_in_trend_regime():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    for i in range(len(rows)):
+        rows[i] = rows[i].model_copy(update={
+            "donchian_upper": Decimal("110"),
+            "donchian_lower": Decimal("95"),
+            "trend_regime": "trend_up", "vol_regime": "normal",
+        })
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": Decimal("97"),
+        "swing_low_5": Decimal("94.5"),
+    })
+    assert detect_range_rejection(rows) is None
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_range_rejection.py -v`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/signals/detectors/range_rejection.py`:
+```python
+"""range_rejection detector.
+
+Fires only in trend_regime=range + vol_regime=normal. Wick-touch-and-close-back
+at either Donchian boundary.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 50
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_range_rejection(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+
+    current = rows[-1]
+    if current.trend_regime != "range" or current.vol_regime != "normal":
+        return None
+    if any(getattr(current, a) is None
+           for a in ("donchian_upper", "donchian_lower", "atr_14", "swing_high_5", "swing_low_5")):
+        return None
+
+    direction: str | None = None
+    if (
+        current.swing_low_5 <= current.donchian_lower
+        and current.close_price > current.donchian_lower
+    ):
+        direction = "long"
+    elif (
+        current.swing_high_5 >= current.donchian_upper
+        and current.close_price < current.donchian_upper
+    ):
+        direction = "short"
+
+    if direction is None:
+        return None
+
+    atr = current.atr_14
+    if direction == "long":
+        stop = current.swing_low_5 - atr * Decimal("0.5")
+        target = current.donchian_upper
+    else:
+        stop = current.swing_high_5 + atr * Decimal("0.5")
+        target = current.donchian_lower
+    rr = abs(target - current.close_price) / abs(current.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=current.symbol, timeframe=current.timeframe,
+        archetype="range_rejection",
+        fired_at=datetime.now(UTC),
+        candle_close_time=current.close_time,
+        trigger_price=current.close_price, direction=direction,
+        confidence=Decimal("0.7"),
+        confidence_breakdown={
+            "donchian_upper": float(current.donchian_upper),
+            "donchian_lower": float(current.donchian_lower),
+            "wick_below_low": direction == "long",
+            "wick_above_high": direction == "short",
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=current.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+- [ ] **Step 4: Register + run**
+
+In `signals/detectors/__init__.py`:
+```python
+from trading_sandwich.signals.detectors.range_rejection import detect_range_rejection
+REGISTRY["range_rejection"] = detect_range_rejection
+```
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_range_rejection.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/trading_sandwich/signals/detectors/range_rejection.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_range_rejection.py
+git commit -m "feat: add range_rejection detector"
+```
+
+---
+
+## Task 32: `liquidity_sweep_daily` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/liquidity_sweep_daily.py`
+- Create: `tests/unit/test_detector_liquidity_sweep_daily.py`
+- Modify: `signals/detectors/__init__.py`
+
+Fires when the current bar's high exceeds `prior_day_high` (`swing_high_5` as proxy when high-field isn't on FeaturesRow) AND close is below `prior_day_high` — "swept" prior-day high, direction short. Mirror for prior-day low, direction long. Regime-agnostic.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_liquidity_sweep_daily.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.liquidity_sweep_daily import detect_liquidity_sweep_daily
+
+
+def test_fires_on_prior_day_high_sweep_short():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    # Last bar swept above prior-day high then closed back below
+    rows[-1] = rows[-1].model_copy(update={
+        "prior_day_high": Decimal("110"),
+        "prior_day_low":  Decimal("100"),
+        "swing_high_5":   Decimal("110.5"),
+        "swing_low_5":    Decimal("100.5"),
+        "close_price":    Decimal("109"),
+    })
+    s = detect_liquidity_sweep_daily(rows)
+    assert s is not None
+    assert s.direction == "short"
+
+
+def test_fires_on_prior_day_low_sweep_long():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "prior_day_high": Decimal("110"),
+        "prior_day_low":  Decimal("100"),
+        "swing_high_5":   Decimal("109"),
+        "swing_low_5":    Decimal("99.5"),
+        "close_price":    Decimal("101"),
+    })
+    s = detect_liquidity_sweep_daily(rows)
+    assert s is not None
+    assert s.direction == "long"
+
+
+def test_no_fire_when_close_remains_beyond():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "prior_day_high": Decimal("110"),
+        "prior_day_low":  Decimal("100"),
+        "swing_high_5":   Decimal("110.5"),
+        "swing_low_5":    Decimal("100.5"),
+        "close_price":    Decimal("111"),    # stayed above
+    })
+    assert detect_liquidity_sweep_daily(rows) is None
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_detector_liquidity_sweep_daily.py -v`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/signals/detectors/liquidity_sweep_daily.py`:
+```python
+"""liquidity_sweep_daily detector — wick beyond prior-day H or L then close
+back inside. Direction is opposite the sweep.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 30
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_liquidity_sweep_daily(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+    c = rows[-1]
+    if any(getattr(c, a) is None for a in ("prior_day_high", "prior_day_low",
+                                           "swing_high_5", "swing_low_5",
+                                           "atr_14")):
+        return None
+
+    direction: str | None = None
+    if c.swing_high_5 > c.prior_day_high and c.close_price < c.prior_day_high:
+        direction = "short"
+    elif c.swing_low_5 < c.prior_day_low and c.close_price > c.prior_day_low:
+        direction = "long"
+
+    if direction is None:
+        return None
+
+    atr = c.atr_14
+    if direction == "long":
+        stop = c.swing_low_5 - atr * Decimal("0.5")
+        target = c.close_price + atr * Decimal("2.5")
+    else:
+        stop = c.swing_high_5 + atr * Decimal("0.5")
+        target = c.close_price - atr * Decimal("2.5")
+    rr = abs(target - c.close_price) / abs(c.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=c.symbol, timeframe=c.timeframe,
+        archetype="liquidity_sweep_daily",
+        fired_at=datetime.now(UTC),
+        candle_close_time=c.close_time,
+        trigger_price=c.close_price, direction=direction,
+        confidence=Decimal("0.75"),
+        confidence_breakdown={
+            "prior_day_high": float(c.prior_day_high),
+            "prior_day_low":  float(c.prior_day_low),
+            "wick_beyond_and_close_back": True,
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=c.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+- [ ] **Step 4: Register + run + commit**
+
+In registry: `REGISTRY["liquidity_sweep_daily"] = detect_liquidity_sweep_daily`
+Run tests; expect PASS.
+```bash
+git add src/trading_sandwich/signals/detectors/liquidity_sweep_daily.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_liquidity_sweep_daily.py
+git commit -m "feat: add liquidity_sweep_daily detector"
+```
+
+---
+
+## Task 33: `liquidity_sweep_swing` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/liquidity_sweep_swing.py`
+- Create: `tests/unit/test_detector_liquidity_sweep_swing.py`
+- Modify: registry
+
+Same rule as Task 32 but references the 20-bar swing H/L (we approximate this in Phase 1 with the MAX(`swing_high_5`) / MIN(`swing_low_5`) across the last 20 rows of `rows`).
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_liquidity_sweep_swing.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.liquidity_sweep_swing import detect_liquidity_sweep_swing
+
+
+def test_fires_when_wick_beyond_swing_high_and_closes_back():
+    rows = make_features_series(n=30, close_slope=0.0, atr=1.0)
+    # Build a synthetic 20-bar swing high of 110 (via swing_high_5 peaks)
+    for i, sh in enumerate([108, 108, 108, 109, 110, 109, 108, 108, 108, 108,
+                            108, 108, 108, 108, 108, 108, 108, 108, 108, 108]):
+        rows[-20 + i] = rows[-20 + i].model_copy(update={
+            "swing_high_5": Decimal(str(sh)),
+            "swing_low_5":  Decimal("98"),
+        })
+    rows[-1] = rows[-1].model_copy(update={
+        "swing_high_5": Decimal("111"),
+        "swing_low_5":  Decimal("105"),
+        "close_price":  Decimal("108"),
+    })
+    s = detect_liquidity_sweep_swing(rows)
+    assert s is not None
+    assert s.direction == "short"
+```
+
+- [ ] **Step 2: Run to see fail + implement + register + run + commit**
+
+Create `src/trading_sandwich/signals/detectors/liquidity_sweep_swing.py`:
+```python
+"""liquidity_sweep_swing — wick beyond trailing 20-bar swing H/L then close back.
+Direction opposite the sweep. Regime-agnostic.
+"""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 30
+SWING_LOOKBACK = 20
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_liquidity_sweep_swing(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+    c = rows[-1]
+    if c.atr_14 is None or c.swing_high_5 is None or c.swing_low_5 is None:
+        return None
+
+    window = rows[-SWING_LOOKBACK - 1:-1]    # 20 bars preceding the current bar
+    highs = [r.swing_high_5 for r in window if r.swing_high_5 is not None]
+    lows = [r.swing_low_5 for r in window if r.swing_low_5 is not None]
+    if not highs or not lows:
+        return None
+    swing_hi = max(highs)
+    swing_lo = min(lows)
+
+    direction: str | None = None
+    if c.swing_high_5 > swing_hi and c.close_price < swing_hi:
+        direction = "short"
+    elif c.swing_low_5 < swing_lo and c.close_price > swing_lo:
+        direction = "long"
+
+    if direction is None:
+        return None
+
+    atr = c.atr_14
+    if direction == "long":
+        stop = c.swing_low_5 - atr * Decimal("0.5")
+        target = c.close_price + atr * Decimal("2.5")
+    else:
+        stop = c.swing_high_5 + atr * Decimal("0.5")
+        target = c.close_price - atr * Decimal("2.5")
+    rr = abs(target - c.close_price) / abs(c.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=c.symbol, timeframe=c.timeframe,
+        archetype="liquidity_sweep_swing",
+        fired_at=datetime.now(UTC),
+        candle_close_time=c.close_time,
+        trigger_price=c.close_price, direction=direction,
+        confidence=Decimal("0.7"),
+        confidence_breakdown={
+            "swing_high_20": float(swing_hi),
+            "swing_low_20":  float(swing_lo),
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=c.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+In registry: `REGISTRY["liquidity_sweep_swing"] = detect_liquidity_sweep_swing`
+
+Run tests → expect PASS.
+
+```bash
+git add src/trading_sandwich/signals/detectors/liquidity_sweep_swing.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_liquidity_sweep_swing.py
+git commit -m "feat: add liquidity_sweep_swing detector"
+```
+
+---
+
+## Task 34: `funding_extreme` detector
+
+**Files:**
+- Create: `src/trading_sandwich/signals/detectors/funding_extreme.py`
+- Create: `tests/unit/test_detector_funding_extreme.py`
+- Modify: registry
+
+Spec §5.1 + §5.3: counter-funding. Long when `funding_rate < per_symbol long threshold`, short when `> short threshold`. Gate: `vol_regime ∈ {normal, expansion}`.
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/unit/test_detector_funding_extreme.py`:
+```python
+from decimal import Decimal
+
+from tests.unit._fakers import make_features_series
+from trading_sandwich.signals.detectors.funding_extreme import detect_funding_extreme
+
+
+def test_long_when_funding_below_threshold():
+    rows = make_features_series(n=10, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "symbol": "BTCUSDT",
+        "funding_rate": Decimal("-0.0010"),  # below the -0.0003 BTC threshold
+        "vol_regime": "normal",
+    })
+    s = detect_funding_extreme(rows)
+    assert s is not None
+    assert s.direction == "long"
+
+
+def test_short_when_funding_above_threshold():
+    rows = make_features_series(n=10, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "symbol": "BTCUSDT",
+        "funding_rate": Decimal("0.0010"),   # above 0.0003 threshold
+        "vol_regime": "normal",
+    })
+    s = detect_funding_extreme(rows)
+    assert s is not None
+    assert s.direction == "short"
+
+
+def test_uses_default_threshold_for_unknown_symbol():
+    rows = make_features_series(n=10, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "symbol": "NEWCOIN",
+        "funding_rate": Decimal("-0.0010"),  # below -0.0005 default
+        "vol_regime": "normal",
+    })
+    s = detect_funding_extreme(rows)
+    assert s is not None
+    assert s.direction == "long"
+
+
+def test_no_fire_when_vol_is_squeeze():
+    rows = make_features_series(n=10, atr=1.0)
+    rows[-1] = rows[-1].model_copy(update={
+        "symbol": "BTCUSDT",
+        "funding_rate": Decimal("0.0010"),
+        "vol_regime": "squeeze",
+    })
+    assert detect_funding_extreme(rows) is None
+```
+
+- [ ] **Step 2: Run → fail → implement**
+
+Create `src/trading_sandwich/signals/detectors/funding_extreme.py`:
+```python
+"""funding_extreme detector. Counter-funding."""
+from __future__ import annotations
+
+import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from trading_sandwich._policy import get_funding_threshold
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+
+MIN_HISTORY = 3
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_DETECTOR_VERSION = _git_sha()
+
+
+def detect_funding_extreme(rows: list[FeaturesRow]) -> Signal | None:
+    if len(rows) < MIN_HISTORY:
+        return None
+    c = rows[-1]
+    if c.vol_regime not in ("normal", "expansion"):
+        return None
+    if c.funding_rate is None or c.atr_14 is None:
+        return None
+
+    long_thr, short_thr = get_funding_threshold(c.symbol)
+    direction: str | None = None
+    if c.funding_rate <= long_thr:
+        direction = "long"
+    elif c.funding_rate >= short_thr:
+        direction = "short"
+    if direction is None:
+        return None
+
+    atr = c.atr_14
+    if direction == "long":
+        stop = c.close_price - atr * Decimal("1.5")
+        target = c.close_price + atr * Decimal("3.0")
+    else:
+        stop = c.close_price + atr * Decimal("1.5")
+        target = c.close_price - atr * Decimal("3.0")
+    rr = abs(target - c.close_price) / abs(c.close_price - stop)
+
+    return Signal(
+        signal_id=uuid4(),
+        symbol=c.symbol, timeframe=c.timeframe,
+        archetype="funding_extreme",
+        fired_at=datetime.now(UTC),
+        candle_close_time=c.close_time,
+        trigger_price=c.close_price, direction=direction,
+        confidence=Decimal("0.72"),
+        confidence_breakdown={
+            "funding_rate": float(c.funding_rate),
+            "threshold_long":  float(long_thr),
+            "threshold_short": float(short_thr),
+        },
+        gating_outcome="below_threshold",
+        features_snapshot=c.model_dump(mode="json"),
+        stop_price=stop, target_price=target, rr_ratio=rr,
+        detector_version=_DETECTOR_VERSION,
+    )
+```
+
+In registry: `REGISTRY["funding_extreme"] = detect_funding_extreme`
+
+Run tests → PASS.
+
+```bash
+git add src/trading_sandwich/signals/detectors/funding_extreme.py src/trading_sandwich/signals/detectors/__init__.py tests/unit/test_detector_funding_extreme.py
+git commit -m "feat: add funding_extreme detector (per-symbol thresholds)"
+```
+
+---
+
+# Checkpoint H — pause for human review
+
+Tasks 26–34 complete. Feature worker now writes all 48 Phase 1 columns + regime labels. All 8 detectors exist and are registered. Each detector has dedicated unit tests. Regime gates work as specified.
+
+**Before continuing to Checkpoint I, verify:**
+```bash
+MSYS_NO_PATHCONV=1 docker compose run --rm tools ruff check src tests
+MSYS_NO_PATHCONV=1 docker compose run --rm test -q
+```
+All tests green; suite should be growing steadily (~70 unit tests + ~8 integration).
+
+---
+
+## Task 35: Dedup gate implementation
+
+**Files:**
+- Create: `src/trading_sandwich/signals/dedup.py`
+- Test: `tests/integration/test_dedup_gate.py`
+
+Dedup is a Postgres lookup: "is there a claude_triaged signal for (symbol, direction) on a higher timeframe within the last dedup_window_minutes?"
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_dedup_gate.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+
+
+def _insert_signal(async_url: str, *, symbol, timeframe, direction, gating_outcome, fired_at):
+    async def _run() -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO signals (signal_id,symbol,timeframe,archetype,"
+                    "fired_at,candle_close_time,trigger_price,direction,confidence,"
+                    "confidence_breakdown,gating_outcome,features_snapshot,detector_version) "
+                    "VALUES (:id,:s,:tf,:a,:f,:f,100,:d,0.8,CAST('{}' AS jsonb),:go,"
+                    "CAST('{}' AS jsonb),'test')"
+                ), {"id": uuid4(), "s": symbol, "tf": timeframe,
+                    "a": "trend_pullback", "f": fired_at,
+                    "d": direction, "go": gating_outcome})
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_dedup_suppresses_5m_when_higher_tf_recent(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        now = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
+        _insert_signal(url, symbol="BTCUSDT", timeframe="1h", direction="long",
+                       gating_outcome="claude_triaged", fired_at=now - timedelta(minutes=10))
+
+        from trading_sandwich.signals.dedup import is_dedup_suppressed
+        suppressed = is_dedup_suppressed(
+            symbol="BTCUSDT", direction="long", timeframe="5m",
+            fired_at=now, window_minutes=30,
+        )
+        assert suppressed is True
+
+
+@pytest.mark.integration
+def test_dedup_does_not_suppress_same_tf(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        now = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
+        _insert_signal(url, symbol="BTCUSDT", timeframe="5m", direction="long",
+                       gating_outcome="claude_triaged", fired_at=now - timedelta(minutes=10))
+
+        from trading_sandwich.signals.dedup import is_dedup_suppressed
+        suppressed = is_dedup_suppressed(
+            symbol="BTCUSDT", direction="long", timeframe="5m",
+            fired_at=now, window_minutes=30,
+        )
+        assert suppressed is False
+
+
+@pytest.mark.integration
+def test_dedup_does_not_suppress_opposite_direction(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        now = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
+        _insert_signal(url, symbol="BTCUSDT", timeframe="1h", direction="short",
+                       gating_outcome="claude_triaged", fired_at=now - timedelta(minutes=10))
+
+        from trading_sandwich.signals.dedup import is_dedup_suppressed
+        assert not is_dedup_suppressed(
+            symbol="BTCUSDT", direction="long", timeframe="5m",
+            fired_at=now, window_minutes=30,
+        )
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_dedup_gate.py -v -m integration`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/signals/dedup.py`:
+```python
+"""Dedup gate: strictly-higher-timeframe signal for the same (symbol, direction)
+within the dedup window suppresses the current candidate.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from sqlalchemy import select
+
+from trading_sandwich._async import run_coro
+from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models import Signal as SignalORM
+
+_TIMEFRAME_RANK = {"5m": 0, "15m": 1, "1h": 2, "4h": 3, "1d": 4}
+
+
+def _higher_timeframes(timeframe: str) -> list[str]:
+    rank = _TIMEFRAME_RANK.get(timeframe, -1)
+    return [tf for tf, r in _TIMEFRAME_RANK.items() if r > rank]
+
+
+async def _check_async(
+    symbol: str, direction: str, timeframe: str,
+    fired_at: datetime, window_minutes: int,
+) -> bool:
+    session_factory = get_session_factory()
+    higher = _higher_timeframes(timeframe)
+    if not higher:
+        return False
+    cutoff = fired_at - timedelta(minutes=window_minutes)
+    async with session_factory() as session:
+        hit = (await session.execute(
+            select(SignalORM.signal_id)
+            .where(
+                SignalORM.symbol == symbol,
+                SignalORM.direction == direction,
+                SignalORM.gating_outcome == "claude_triaged",
+                SignalORM.timeframe.in_(higher),
+                SignalORM.fired_at >= cutoff,
+                SignalORM.fired_at <= fired_at,
+            )
+            .limit(1)
+        )).scalar_one_or_none()
+    return hit is not None
+
+
+def is_dedup_suppressed(
+    *,
+    symbol: str, direction: str, timeframe: str,
+    fired_at: datetime, window_minutes: int,
+) -> bool:
+    return run_coro(_check_async(symbol, direction, timeframe, fired_at, window_minutes))
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_dedup_gate.py -v -m integration`
+Expected: 3 PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/trading_sandwich/signals/dedup.py tests/integration/test_dedup_gate.py
+git commit -m "feat: add dedup gate (strictly-higher-TF claude_triaged lookup)"
+```
+
+---
+
+## Task 36: Signal worker — iterate registry + three-stage gating
+
+**Files:**
+- Modify: `src/trading_sandwich/signals/worker.py`
+- Modify: `src/trading_sandwich/signals/gating.py` — plug dedup stage
+- Test: rewrite `tests/integration/test_signal_worker.py`
+
+Phase 0's signal worker ran only `detect_trend_pullback` and applied threshold+cooldown. Phase 1 iterates every entry in `REGISTRY`, applies threshold → cooldown → dedup in order, persists each result.
+
+- [ ] **Step 1: Extend `gating.py` with a composite `gate_signal` entry point**
+
+Replace `src/trading_sandwich/signals/gating.py` body (keep the Phase-0 in-memory GatingState helpers for back-compat/unit tests but add a Phase-1 real gate):
+
+```python
+"""Phase 0 in-memory gating (threshold + cooldown) — retained for unit tests.
+Phase 1 adds `gate_signal_with_db`, the three-stage gate used by the signal
+worker against Postgres.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import select
+
+from trading_sandwich._async import run_coro
+from trading_sandwich._policy import (
+    get_confidence_threshold,
+    get_cooldown_minutes,
+    get_dedup_window_minutes,
+)
+from trading_sandwich.contracts.models import Signal
+from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models import Signal as SignalORM
+from trading_sandwich.signals.dedup import is_dedup_suppressed
+
+
+@dataclass
+class GatingState:
+    last_fired: dict[tuple[str, str], datetime] = field(default_factory=dict)
+
+
+def apply_gating(signal: Signal, state: GatingState, policy: dict) -> Signal:
+    threshold = Decimal(str(policy["per_archetype_confidence_threshold"][signal.archetype]))
+    if signal.confidence < threshold:
+        return signal.model_copy(update={"gating_outcome": "below_threshold"})
+
+    cooldown_min = policy["per_archetype_cooldown_minutes"][signal.archetype]
+    key = (signal.symbol, signal.archetype)
+    last = state.last_fired.get(key)
+    if last is not None and signal.fired_at - last < timedelta(minutes=cooldown_min):
+        return signal.model_copy(update={"gating_outcome": "cooldown_suppressed"})
+
+    state.last_fired[key] = signal.fired_at
+    return signal.model_copy(update={"gating_outcome": "claude_triaged"})
+
+
+async def _cooldown_violated_async(signal: Signal) -> bool:
+    cooldown_min = get_cooldown_minutes(signal.archetype)
+    cutoff = signal.fired_at - timedelta(minutes=cooldown_min)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        last = (await session.execute(
+            select(SignalORM.fired_at)
+            .where(
+                SignalORM.symbol == signal.symbol,
+                SignalORM.archetype == signal.archetype,
+                SignalORM.gating_outcome == "claude_triaged",
+                SignalORM.fired_at >= cutoff,
+                SignalORM.fired_at <= signal.fired_at,
+            )
+            .order_by(SignalORM.fired_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+    return last is not None
+
+
+def gate_signal_with_db(signal: Signal) -> Signal:
+    """Three-stage gate applied strictly in order:
+       1. below_threshold
+       2. cooldown_suppressed
+       3. dedup_suppressed
+    First non-pass stage short-circuits.
+    """
+    # Stage 1 — threshold
+    threshold = get_confidence_threshold(signal.archetype)
+    if signal.confidence < threshold:
+        return signal.model_copy(update={"gating_outcome": "below_threshold"})
+
+    # Stage 2 — cooldown
+    if run_coro(_cooldown_violated_async(signal)):
+        return signal.model_copy(update={"gating_outcome": "cooldown_suppressed"})
+
+    # Stage 3 — dedup
+    window = get_dedup_window_minutes()
+    if is_dedup_suppressed(
+        symbol=signal.symbol, direction=signal.direction,
+        timeframe=signal.timeframe, fired_at=signal.fired_at,
+        window_minutes=window,
+    ):
+        return signal.model_copy(update={"gating_outcome": "dedup_suppressed"})
+
+    return signal.model_copy(update={"gating_outcome": "claude_triaged"})
+```
+
+- [ ] **Step 2: Rewrite the signal worker to iterate REGISTRY**
+
+Replace the body of `src/trading_sandwich/signals/worker.py`:
+```python
+"""Signal worker. Celery consumer that reads features context, iterates the
+detector registry, applies three-stage gating, persists results, and schedules
+outcome measurement for claude_triaged signals.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from trading_sandwich._async import run_coro
+from trading_sandwich.celery_app import app
+from trading_sandwich.contracts.models import FeaturesRow, Signal
+from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models import Features as FeaturesORM
+from trading_sandwich.db.models import Signal as SignalORM
+from trading_sandwich.logging import get_logger
+from trading_sandwich.metrics import SIGNALS_FIRED
+from trading_sandwich.signals.detectors import REGISTRY
+from trading_sandwich.signals.gating import gate_signal_with_db
+
+logger = get_logger(__name__)
+
+LOOKBACK = 60
+HORIZONS_SECONDS: dict[str, int] = {
+    "15m": 15 * 60, "1h": 60 * 60, "4h": 4 * 60 * 60,
+    "24h": 24 * 60 * 60, "3d": 3 * 24 * 60 * 60, "7d": 7 * 24 * 60 * 60,
+}
+
+
+def _row_to_features(r: FeaturesORM) -> FeaturesRow:
+    return FeaturesRow(
+        symbol=r.symbol, timeframe=r.timeframe, close_time=r.close_time,
+        close_price=r.close_price,
+        ema_8=r.ema_8, ema_21=r.ema_21, ema_55=r.ema_55, ema_200=r.ema_200,
+        rsi_14=r.rsi_14, atr_14=r.atr_14,
+        macd_line=r.macd_line, macd_signal=r.macd_signal, macd_hist=r.macd_hist,
+        adx_14=r.adx_14, di_plus_14=r.di_plus_14, di_minus_14=r.di_minus_14,
+        stoch_rsi_k=r.stoch_rsi_k, stoch_rsi_d=r.stoch_rsi_d, roc_10=r.roc_10,
+        bb_upper=r.bb_upper, bb_middle=r.bb_middle, bb_lower=r.bb_lower, bb_width=r.bb_width,
+        keltner_upper=r.keltner_upper, keltner_middle=r.keltner_middle, keltner_lower=r.keltner_lower,
+        donchian_upper=r.donchian_upper, donchian_middle=r.donchian_middle, donchian_lower=r.donchian_lower,
+        obv=r.obv, vwap=r.vwap, volume_zscore_20=r.volume_zscore_20, mfi_14=r.mfi_14,
+        swing_high_5=r.swing_high_5, swing_low_5=r.swing_low_5,
+        pivot_p=r.pivot_p, pivot_r1=r.pivot_r1, pivot_r2=r.pivot_r2,
+        pivot_s1=r.pivot_s1, pivot_s2=r.pivot_s2,
+        prior_day_high=r.prior_day_high, prior_day_low=r.prior_day_low,
+        prior_week_high=r.prior_week_high, prior_week_low=r.prior_week_low,
+        funding_rate=r.funding_rate, funding_rate_24h_mean=r.funding_rate_24h_mean,
+        open_interest_usd=r.open_interest_usd,
+        oi_delta_1h=r.oi_delta_1h, oi_delta_24h=r.oi_delta_24h,
+        long_short_ratio=r.long_short_ratio, ob_imbalance_05=r.ob_imbalance_05,
+        ema_21_slope_bps=r.ema_21_slope_bps,
+        atr_percentile_100=r.atr_percentile_100,
+        bb_width_percentile_100=r.bb_width_percentile_100,
+        trend_regime=r.trend_regime, vol_regime=r.vol_regime,
+        feature_version=r.feature_version,
+    )
+
+
+async def _load_features(symbol: str, timeframe: str, close_time: datetime) -> list[FeaturesRow]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        orm_rows = (await session.execute(
+            select(FeaturesORM)
+            .where(
+                FeaturesORM.symbol == symbol,
+                FeaturesORM.timeframe == timeframe,
+                FeaturesORM.close_time <= close_time,
+            )
+            .order_by(FeaturesORM.close_time.desc())
+            .limit(LOOKBACK)
+        )).scalars().all()
+    return [_row_to_features(r) for r in reversed(orm_rows)]
+
+
+async def _persist_signal(signal: Signal) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = pg_insert(SignalORM).values(
+            signal_id=signal.signal_id, symbol=signal.symbol, timeframe=signal.timeframe,
+            archetype=signal.archetype, fired_at=signal.fired_at,
+            candle_close_time=signal.candle_close_time,
+            trigger_price=signal.trigger_price, direction=signal.direction,
+            confidence=signal.confidence, confidence_breakdown=signal.confidence_breakdown,
+            gating_outcome=signal.gating_outcome,
+            features_snapshot=signal.features_snapshot,
+            stop_price=signal.stop_price, target_price=signal.target_price, rr_ratio=signal.rr_ratio,
+            detector_version=signal.detector_version,
+        ).on_conflict_do_nothing(index_elements=["signal_id"])
+        await session.execute(stmt)
+        await session.commit()
+
+
+def _schedule_outcomes(signal: Signal) -> None:
+    from trading_sandwich.outcomes.worker import measure_outcome as measure_outcome_task
+    for horizon, secs in HORIZONS_SECONDS.items():
+        measure_outcome_task.apply_async(
+            args=[str(signal.signal_id), horizon],
+            queue="outcomes",
+            countdown=secs,
+        )
+
+
+async def _detect_async(symbol: str, timeframe: str, close_time_iso: str) -> None:
+    close_time = datetime.fromisoformat(close_time_iso)
+    features = await _load_features(symbol, timeframe, close_time)
+    if not features:
+        return
+
+    for archetype, detector_fn in REGISTRY.items():
+        try:
+            sig = detector_fn(features)
+        except Exception as exc:
+            logger.exception("detector_error", archetype=archetype, err=str(exc))
+            continue
+        if sig is None:
+            continue
+
+        gated = gate_signal_with_db(sig)
+        await _persist_signal(gated)
+        SIGNALS_FIRED.labels(
+            symbol=sig.symbol, timeframe=sig.timeframe,
+            archetype=sig.archetype, gating_outcome=gated.gating_outcome,
+        ).inc()
+        if gated.gating_outcome == "claude_triaged":
+            _schedule_outcomes(gated)
+
+
+@app.task(name="trading_sandwich.signals.worker.detect_signals")
+def detect_signals(symbol: str, timeframe: str, close_time_iso: str) -> None:
+    run_coro(_detect_async(symbol, timeframe, close_time_iso))
+```
+
+- [ ] **Step 3: Update `tests/integration/test_signal_worker.py`**
+
+Since this integration test was written in Phase 0 for a single-detector worker, update its assertions for Phase 1. Replace the Phase 0 test body's assertion block with:
+```python
+        rows = _signals_rows(pg_url)
+        # Phase 1 iterates all detectors; the seeded pattern may match multiple
+        # archetypes. Assert at least one trend_pullback row persisted with
+        # claude_triaged gating.
+        archetype_to_outcome = {r["archetype"]: r["gating_outcome"] for r in rows}
+        assert "trend_pullback" in archetype_to_outcome
+        assert archetype_to_outcome["trend_pullback"] == "claude_triaged"
+
+        messages = _drain_outcomes_queue(redis_url)
+        # All 6 horizons now, not 2
+        assert len(messages) == 6
+        horizons = {m["args"][1] for m in messages}
+        assert horizons == {"15m", "1h", "4h", "24h", "3d", "7d"}
+```
+
+Also update `_seed_features` in that test file to include the Phase 1 columns the detectors expect on the last-bar (`trend_regime`, `vol_regime`, and any Donchian/Bollinger fields referenced by the other detectors). For simplicity, set `trend_regime='trend_up'`, `vol_regime='normal'`, and leave the others NULL — the other detectors skip gracefully on NULL inputs, so only trend_pullback fires, matching the assertion above.
+
+Add to the seed query:
+```python
+"INSERT INTO features (symbol,timeframe,close_time,close_price,ema_21,rsi_14,atr_14,"
+"feature_version,trend_regime,vol_regime) "
+"VALUES (:s,:t,:ct,:cp,:e,:r,:a,:v,'trend_up','normal')"
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_signal_worker.py -v -m integration`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/trading_sandwich/signals/worker.py src/trading_sandwich/signals/gating.py tests/integration/test_signal_worker.py
+git commit -m "feat: signal worker iterates full registry with three-stage gating"
+```
+
+---
+
+## Task 37: Outcome worker — schedule all 6 horizons + redbeat persistence
+
+**Files:**
+- Modify: `src/trading_sandwich/outcomes/worker.py` — ensure 6 horizons, no other change needed
+- Test: `tests/integration/test_outcome_horizons_all.py`
+
+Phase 0's outcome worker already accepts any horizon from `HORIZON_MINUTES` (which had all 6 defined). The scheduling of all 6 now happens in Task 36's signal worker. This task adds an integration test that verifies the countdown-scheduled tasks are durably queued in Redis (i.e., redbeat / Celery survive a broker "restart" by re-fetching scheduled tasks).
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_outcome_horizons_all.py`:
+```python
+import asyncio
+import base64
+import json
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
+
+import pytest
+import redis
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
+
+
+def _seed_signal_and_forward_candles(async_url: str) -> tuple[datetime, str]:
+    base = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
+    signal_id = uuid4()
+    async def _run() -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO signals (signal_id,symbol,timeframe,archetype,fired_at,"
+                    "candle_close_time,trigger_price,direction,confidence,confidence_breakdown,"
+                    "gating_outcome,features_snapshot,stop_price,target_price,rr_ratio,detector_version)"
+                    " VALUES (:id,:s,:t,:a,:f,:cct,:tp,:d,:c,CAST('{}' AS jsonb),"
+                    ":go,CAST(:snap AS jsonb),:sp,:tg,:rr,:dv)"
+                ), {
+                    "id": signal_id, "s": "BTCUSDT", "t": "5m", "a": "trend_pullback",
+                    "f": base, "cct": base,
+                    "tp": Decimal("100"), "d": "long", "c": Decimal("0.9"),
+                    "go": "claude_triaged",
+                    "snap": '{"atr_14": "1.0"}',
+                    "sp": Decimal("99"), "tg": Decimal("102"),
+                    "rr": Decimal("2"), "dv": "test",
+                })
+                for i in range(2016):   # 7 days × 24h × 12 5m-bars/hr
+                    ot = base + timedelta(minutes=5 * i)
+                    ct = ot + timedelta(minutes=5)
+                    close = 100 + min(i * 0.01, 20)
+                    await conn.execute(text(
+                        "INSERT INTO raw_candles (symbol,timeframe,open_time,close_time,open,high,low,close,volume) "
+                        "VALUES (:s,:t,:ot,:ct,:o,:h,:l,:c,10)"
+                    ), {"s": "BTCUSDT", "t": "5m", "ot": ot, "ct": ct,
+                        "o": close - 0.1, "h": close + 0.3, "l": close - 0.3, "c": close})
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+    return base, str(signal_id)
+
+
+def _outcome_rows(async_url: str, signal_id: str) -> list[dict]:
+    async def _run() -> list[dict]:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(
+                    "SELECT horizon FROM signal_outcomes WHERE signal_id=:id"
+                ), {"id": signal_id})).all()
+                return [r.horizon for r in rows]
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(120)
+def test_measure_outcome_writes_all_6_horizons(env_for_postgres, env_for_redis):
+    with (
+        PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg,
+        RedisContainer("redis:7-alpine") as rd,
+    ):
+        pg_url = pg.get_connection_url()
+        redis_url = f"redis://{rd.get_container_host_ip()}:{rd.get_exposed_port(6379)}/0"
+        env_for_redis(redis_url)
+        env_for_postgres(pg_url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        _, signal_id = _seed_signal_and_forward_candles(pg_url)
+        from trading_sandwich.outcomes.worker import measure_outcome
+        for horizon in ("15m", "1h", "4h", "24h", "3d", "7d"):
+            measure_outcome.run(signal_id, horizon)
+        horizons = sorted(_outcome_rows(pg_url, signal_id))
+        assert set(horizons) == {"15m", "1h", "4h", "24h", "3d", "7d"}
+```
+
+- [ ] **Step 2: Run**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_outcome_horizons_all.py -v -m integration`
+Expected: PASS (HORIZON_MINUTES already covers all 6 horizons in Phase 0 code).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/integration/test_outcome_horizons_all.py
+git commit -m "test: integration test that all 6 outcome horizons can be measured"
+```
+
+---
+
+# Checkpoint I — pause for human review
+
+Tasks 35–37 complete. Dedup gate works in Postgres. Signal worker iterates the full detector registry and applies three-stage gating. Outcome worker already supports all 6 horizons; integration test confirms it. Suite stays green.
+
+**Verify:**
+```bash
+MSYS_NO_PATHCONV=1 docker compose run --rm tools ruff check src tests
+MSYS_NO_PATHCONV=1 docker compose run --rm test -q
+```
+
+---
+
+*(Plan continues in Part 4: Tasks 38–56 cover backfill tooling — REST raw candles, REST microstructure, features backfill — plus metrics port allocator, observability, E2E test, deploy runbook, self-review, execution handoff.)*
