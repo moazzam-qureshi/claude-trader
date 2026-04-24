@@ -69,10 +69,10 @@ async def _ensure_partitions_for_range(
     async with session_factory() as session:
         while cur <= end_bound:
             y, m = cur.year, cur.month
-            if m == 12:
-                next_start = datetime(y + 1, 1, 1, tzinfo=UTC)
-            else:
-                next_start = datetime(y, m + 1, 1, tzinfo=UTC)
+            next_start = (
+                datetime(y + 1, 1, 1, tzinfo=UTC) if m == 12
+                else datetime(y, m + 1, 1, tzinfo=UTC)
+            )
             partition_name = f"raw_candles_{y:04d}_{m:02d}"
             await session.execute(text(
                 f"CREATE TABLE IF NOT EXISTS {partition_name} "
