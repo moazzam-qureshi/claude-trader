@@ -184,3 +184,44 @@ class ClaudeDecision(Base):
     cost_tokens_in: Mapped[int | None] = mapped_column(Integer)
     cost_tokens_out: Mapped[int | None] = mapped_column(Integer)
     cost_tokens_cache: Mapped[int | None] = mapped_column(Integer)
+
+
+class RawOrderbookSnapshot(Base):
+    __tablename__ = "raw_orderbook_snapshots"
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    bids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    asks: Mapped[list] = mapped_column(JSONB, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+    )
+
+
+class RawFunding(Base):
+    __tablename__ = "raw_funding"
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    settlement_time: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+    )
+
+
+class RawOpenInterest(Base):
+    __tablename__ = "raw_open_interest"
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    open_interest_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+    )
+
+
+class RawLongShortRatio(Base):
+    __tablename__ = "raw_long_short_ratio"
+    symbol: Mapped[str] = mapped_column(Text, primary_key=True)
+    captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    ratio: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+    )

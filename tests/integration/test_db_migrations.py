@@ -61,6 +61,18 @@ _PHASE_1_FEATURES_COLUMNS = [
 
 
 @pytest.mark.integration
+def test_all_phase_1_raw_tables_exist(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _assert_tables(url, [
+            "raw_orderbook_snapshots", "raw_funding",
+            "raw_open_interest", "raw_long_short_ratio",
+        ])
+
+
+@pytest.mark.integration
 def test_features_has_phase_1_columns(env_for_postgres):
     with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
         url = pg.get_connection_url()
