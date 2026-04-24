@@ -8,6 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# TA-Lib note: Phase 1's `ta-lib>=0.4.32` pypi package ships a manylinux2014
+# wheel that vendors the C library, so no system TA-Lib package is needed.
+# (Debian trixie does not ship libta-lib0; Phase 0 learned the hard way that
+# the 0.4.0 source-build on newer toolchains fails — the vendored wheel
+# replaces both approaches.)
+
 COPY --from=ghcr.io/astral-sh/uv:0.4.27 /uv /usr/local/bin/uv
 
 ENV UV_SYSTEM_PYTHON=1 \
@@ -38,9 +44,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       prometheus-client>=0.20 \
       python-json-logger>=2.0 \
       pyyaml>=6.0 \
+      ta-lib>=0.4.32 \
+      celery-redbeat>=2.2 \
+      httpx>=0.27 \
       pytest>=8.2 \
       pytest-asyncio>=0.23 \
       pytest-cov>=5.0 \
+      pytest-timeout>=2.3 \
       "testcontainers[postgres,redis]>=4.5" \
       ruff>=0.5 \
       mypy>=1.10 \
