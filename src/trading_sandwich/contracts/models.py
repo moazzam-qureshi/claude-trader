@@ -60,6 +60,69 @@ class FeaturesRow(_Base):
     rsi_14: Decimal | None = None
     atr_14: Decimal | None = None
 
+    # Phase 1 extensions — all nullable
+    ema_8: Decimal | None = None
+    ema_55: Decimal | None = None
+    ema_200: Decimal | None = None
+
+    macd_line: Decimal | None = None
+    macd_signal: Decimal | None = None
+    macd_hist: Decimal | None = None
+
+    adx_14: Decimal | None = None
+    di_plus_14: Decimal | None = None
+    di_minus_14: Decimal | None = None
+
+    stoch_rsi_k: Decimal | None = None
+    stoch_rsi_d: Decimal | None = None
+    roc_10: Decimal | None = None
+
+    bb_upper: Decimal | None = None
+    bb_middle: Decimal | None = None
+    bb_lower: Decimal | None = None
+    bb_width: Decimal | None = None
+
+    keltner_upper: Decimal | None = None
+    keltner_middle: Decimal | None = None
+    keltner_lower: Decimal | None = None
+
+    donchian_upper: Decimal | None = None
+    donchian_middle: Decimal | None = None
+    donchian_lower: Decimal | None = None
+
+    obv: Decimal | None = None
+    vwap: Decimal | None = None
+    volume_zscore_20: Decimal | None = None
+    mfi_14: Decimal | None = None
+
+    swing_high_5: Decimal | None = None
+    swing_low_5: Decimal | None = None
+
+    pivot_p: Decimal | None = None
+    pivot_r1: Decimal | None = None
+    pivot_r2: Decimal | None = None
+    pivot_s1: Decimal | None = None
+    pivot_s2: Decimal | None = None
+
+    prior_day_high: Decimal | None = None
+    prior_day_low: Decimal | None = None
+    prior_week_high: Decimal | None = None
+    prior_week_low: Decimal | None = None
+
+    funding_rate: Decimal | None = None
+    funding_rate_24h_mean: Decimal | None = None
+
+    open_interest_usd: Decimal | None = None
+    oi_delta_1h: Decimal | None = None
+    oi_delta_24h: Decimal | None = None
+
+    long_short_ratio: Decimal | None = None
+    ob_imbalance_05: Decimal | None = None
+
+    ema_21_slope_bps: Decimal | None = None
+    atr_percentile_100: Decimal | None = None
+    bb_width_percentile_100: Decimal | None = None
+
     trend_regime: str | None = None
     vol_regime: str | None = None
 
