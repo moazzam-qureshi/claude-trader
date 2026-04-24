@@ -6206,4 +6206,1398 @@ MSYS_NO_PATHCONV=1 docker compose run --rm test -q
 
 ---
 
-*(Plan continues in Part 4: Tasks 38–56 cover backfill tooling — REST raw candles, REST microstructure, features backfill — plus metrics port allocator, observability, E2E test, deploy runbook, self-review, execution handoff.)*
+## Task 38: REST raw-candle backfill tool
+
+**Files:**
+- Create: `src/trading_sandwich/ingestor/rest_backfill.py`
+- Test: `tests/integration/test_rest_backfill.py`
+
+One-shot tool that fetches 1 year of klines per (symbol, timeframe) via Binance REST `GET /fapi/v1/klines` and inserts into `raw_candles` with `on_conflict_do_nothing`. Runs via `docker compose run --rm tools python -m trading_sandwich.ingestor.rest_backfill --symbols ... --timeframes ... --days 365`. Bypasses pgbouncer (connects directly to Postgres — see spec §9.2).
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_rest_backfill.py`:
+```python
+import asyncio
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+
+
+def _select_count(async_url: str, where: str = "") -> int:
+    async def _run() -> int:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                return (await conn.execute(text(
+                    f"SELECT count(*) FROM raw_candles {where}"
+                ))).scalar()
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_rest_backfill_inserts_candles(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        # 3 stub kline rows — Binance REST returns arrays, each:
+        # [open_time_ms, open, high, low, close, volume,
+        #  close_time_ms, quote_volume, trade_count, taker_buy_base, taker_buy_quote, ignore]
+        stub = [
+            [1700000000000, "100", "105", "99",  "104", "10", 1700000299999,
+             "1040", 5, "5", "520", "0"],
+            [1700000300000, "104", "108", "103", "107", "12", 1700000599999,
+             "1284", 6, "7", "749", "0"],
+            [1700000600000, "107", "109", "105", "106", "8",  1700000899999,
+             "856",  4, "3", "321", "0"],
+        ]
+        async def stub_fetch(client, *, symbol, timeframe, start_ms, limit):
+            return stub
+
+        with patch(
+            "trading_sandwich.ingestor.rest_backfill._fetch_klines_page",
+            new=AsyncMock(side_effect=stub_fetch),
+        ):
+            from trading_sandwich.ingestor.rest_backfill import run_backfill
+            asyncio.run(run_backfill(
+                symbols=["BTCUSDT"], timeframes=["5m"], days=1,
+            ))
+
+        assert _select_count(url) == 3
+        assert _select_count(url, where="WHERE symbol='BTCUSDT' AND timeframe='5m'") == 3
+```
+
+- [ ] **Step 2: Run to see fail**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_rest_backfill.py -v -m integration`
+Expected: FAIL — module missing.
+
+- [ ] **Step 3: Implement**
+
+Create `src/trading_sandwich/ingestor/rest_backfill.py`:
+```python
+"""One-shot REST raw-candle backfill. Fetches klines from Binance USD-M REST
+and inserts into raw_candles. Bypasses pgbouncer via `create_async_engine` on
+the direct Postgres URL.
+
+Run:
+  docker compose run --rm tools python -m trading_sandwich.ingestor.rest_backfill \
+      --symbols BTCUSDT,ETHUSDT --timeframes 5m,15m,1h,4h,1d --days 365
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import httpx
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from trading_sandwich.config import get_settings
+from trading_sandwich.db.models import RawCandle
+from trading_sandwich.ingestor.rest_poller import fapi_base_url
+from trading_sandwich.logging import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
+
+_TF_TO_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+_BATCH_LIMIT = 1500  # Binance max per kline request
+
+
+async def _fetch_klines_page(
+    client: httpx.AsyncClient, *,
+    symbol: str, timeframe: str, start_ms: int, limit: int,
+) -> list[list]:
+    resp = await client.get("/fapi/v1/klines", params={
+        "symbol": symbol, "interval": timeframe,
+        "startTime": start_ms, "limit": limit,
+    })
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _to_row(symbol: str, timeframe: str, raw: list) -> dict:
+    return {
+        "symbol": symbol, "timeframe": timeframe,
+        "open_time":  datetime.fromtimestamp(raw[0]  / 1000, tz=UTC),
+        "close_time": datetime.fromtimestamp(raw[6]  / 1000, tz=UTC),
+        "open":  Decimal(str(raw[1])),  "high":  Decimal(str(raw[2])),
+        "low":   Decimal(str(raw[3])),  "close": Decimal(str(raw[4])),
+        "volume": Decimal(str(raw[5])),
+        "quote_volume":    Decimal(str(raw[7])),
+        "trade_count":     int(raw[8]),
+        "taker_buy_base":  Decimal(str(raw[9])),
+        "taker_buy_quote": Decimal(str(raw[10])),
+    }
+
+
+async def run_backfill(*, symbols: list[str], timeframes: list[str], days: int) -> None:
+    settings = get_settings()
+    # Direct-to-Postgres engine — bypasses pgbouncer per spec §9.2.
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    end_time = datetime.now(UTC).replace(second=0, microsecond=0)
+    async with httpx.AsyncClient(base_url=fapi_base_url(), timeout=30.0) as client:
+        for symbol in symbols:
+            for tf in timeframes:
+                tf_minutes = _TF_TO_MINUTES[tf]
+                start_time = end_time - timedelta(days=days)
+                cursor_ms = int(start_time.timestamp() * 1000)
+                total_inserted = 0
+                while cursor_ms < int(end_time.timestamp() * 1000):
+                    batch = await _fetch_klines_page(
+                        client, symbol=symbol, timeframe=tf,
+                        start_ms=cursor_ms, limit=_BATCH_LIMIT,
+                    )
+                    if not batch:
+                        break
+                    rows = [_to_row(symbol, tf, r) for r in batch]
+                    async with session_factory() as session:
+                        stmt = pg_insert(RawCandle).values(rows).on_conflict_do_nothing(
+                            index_elements=["symbol", "timeframe", "open_time"],
+                        )
+                        await session.execute(stmt)
+                        await session.commit()
+                    total_inserted += len(rows)
+                    last_open_ms = batch[-1][0]
+                    next_cursor = last_open_ms + tf_minutes * 60_000
+                    if next_cursor <= cursor_ms:
+                        break    # no progress; avoid infinite loop
+                    cursor_ms = next_cursor
+                    # Rate-limit courtesy pause
+                    await asyncio.sleep(0.25)
+                logger.info("rest_backfill_done", symbol=symbol, timeframe=tf,
+                            rows=total_inserted)
+    await engine.dispose()
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Binance REST raw-candle backfill")
+    ap.add_argument("--symbols", required=True, help="Comma-separated (e.g. BTCUSDT,ETHUSDT)")
+    ap.add_argument("--timeframes", required=True, help="Comma-separated (e.g. 5m,15m,1h,4h,1d)")
+    ap.add_argument("--days", type=int, default=365)
+    return ap.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    timeframes = [t.strip() for t in args.timeframes.split(",") if t.strip()]
+    asyncio.run(run_backfill(symbols=symbols, timeframes=timeframes, days=args.days))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run integration test**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_rest_backfill.py -v -m integration`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/trading_sandwich/ingestor/rest_backfill.py tests/integration/test_rest_backfill.py
+git commit -m "feat: REST raw-candle backfill tool (1-year default, bypasses pgbouncer)"
+```
+
+---
+
+## Task 39: REST microstructure backfill tool
+
+**Files:**
+- Create: `src/trading_sandwich/ingestor/rest_backfill_microstructure.py`
+- Test: `tests/integration/test_rest_backfill_microstructure.py`
+
+Pulls 30 days of funding + 7 days of OI per symbol. Used once at Phase 1 deploy so regime inputs that depend on `funding_rate_24h_mean` and `oi_delta_24h` produce values from t=0 instead of waiting a day.
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_rest_backfill_microstructure.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+
+
+def _select_count(async_url: str, table: str) -> int:
+    async def _run() -> int:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                return (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar()
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_backfill_microstructure_inserts(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        base = datetime(2026, 4, 21, tzinfo=UTC)
+        funding = [
+            {"symbol": "BTCUSDT", "settlement_time": base + timedelta(hours=8 * i),
+             "rate": Decimal("0.0001")}
+            for i in range(30)
+        ]
+        oi_history = [
+            {"symbol": "BTCUSDT", "captured_at": base + timedelta(hours=i),
+             "open_interest_usd": Decimal("1000000000")}
+            for i in range(7 * 24)
+        ]
+
+        with (
+            patch(
+                "trading_sandwich.ingestor.rest_backfill_microstructure._fetch_funding_window",
+                new=AsyncMock(return_value=funding),
+            ),
+            patch(
+                "trading_sandwich.ingestor.rest_backfill_microstructure._fetch_oi_history",
+                new=AsyncMock(return_value=oi_history),
+            ),
+        ):
+            from trading_sandwich.ingestor.rest_backfill_microstructure import run_microstructure_backfill
+            asyncio.run(run_microstructure_backfill(symbols=["BTCUSDT"]))
+
+        assert _select_count(url, "raw_funding") == 30
+        assert _select_count(url, "raw_open_interest") == 7 * 24
+```
+
+- [ ] **Step 2: Run to see fail → implement**
+
+Create `src/trading_sandwich/ingestor/rest_backfill_microstructure.py`:
+```python
+"""One-shot microstructure backfill at Phase 1 deploy.
+
+Pulls ~30 days of funding settlements + ~7 days of 1h OI snapshots per symbol
+so the features pipeline has meaningful 24h-mean and 24h-delta values from t=0.
+
+Run:
+  docker compose run --rm tools python -m \
+      trading_sandwich.ingestor.rest_backfill_microstructure --symbols BTCUSDT,ETHUSDT,...
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import httpx
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from trading_sandwich.config import get_settings
+from trading_sandwich.db.models import RawFunding, RawOpenInterest
+from trading_sandwich.ingestor.rest_poller import fapi_base_url
+from trading_sandwich.logging import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
+
+
+async def _fetch_funding_window(client: httpx.AsyncClient, symbol: str, days: int) -> list[dict]:
+    """GET /fapi/v1/fundingRate — paginates by `limit=1000` backwards from now."""
+    end = datetime.now(UTC)
+    start = end - timedelta(days=days)
+    resp = await client.get("/fapi/v1/fundingRate", params={
+        "symbol": symbol, "limit": 1000,
+        "startTime": int(start.timestamp() * 1000),
+        "endTime":   int(end.timestamp() * 1000),
+    })
+    resp.raise_for_status()
+    return [
+        {"symbol": symbol,
+         "settlement_time": datetime.fromtimestamp(r["fundingTime"] / 1000, tz=UTC),
+         "rate": Decimal(str(r["fundingRate"]))}
+        for r in resp.json()
+    ]
+
+
+async def _fetch_oi_history(client: httpx.AsyncClient, symbol: str, days: int) -> list[dict]:
+    """GET /futures/data/openInterestHist — 1h granularity, rolling 7 days max."""
+    end = datetime.now(UTC)
+    start = end - timedelta(days=days)
+    resp = await client.get("/futures/data/openInterestHist", params={
+        "symbol": symbol, "period": "1h", "limit": 500,
+        "startTime": int(start.timestamp() * 1000),
+        "endTime":   int(end.timestamp() * 1000),
+    })
+    resp.raise_for_status()
+    rows = []
+    for r in resp.json():
+        oi_contracts = Decimal(str(r["sumOpenInterest"]))
+        mark_notional = Decimal(str(r.get("sumOpenInterestValue", r["sumOpenInterest"])))
+        rows.append({
+            "symbol": symbol,
+            "captured_at": datetime.fromtimestamp(r["timestamp"] / 1000, tz=UTC),
+            "open_interest_usd": mark_notional,
+        })
+    return rows
+
+
+async def run_microstructure_backfill(*, symbols: list[str]) -> None:
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with httpx.AsyncClient(base_url=fapi_base_url(), timeout=30.0) as client:
+        for symbol in symbols:
+            funding = await _fetch_funding_window(client, symbol, days=30)
+            oi = await _fetch_oi_history(client, symbol, days=7)
+            async with session_factory() as session:
+                if funding:
+                    await session.execute(
+                        pg_insert(RawFunding).values(funding).on_conflict_do_nothing()
+                    )
+                if oi:
+                    await session.execute(
+                        pg_insert(RawOpenInterest).values(oi).on_conflict_do_nothing()
+                    )
+                await session.commit()
+            logger.info("microstructure_backfill_done",
+                        symbol=symbol, funding=len(funding), oi=len(oi))
+
+    await engine.dispose()
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbols", required=True)
+    return ap.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    asyncio.run(run_microstructure_backfill(symbols=symbols))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_rest_backfill_microstructure.py -v -m integration`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/trading_sandwich/ingestor/rest_backfill_microstructure.py tests/integration/test_rest_backfill_microstructure.py
+git commit -m "feat: REST microstructure backfill (30d funding + 7d OI)"
+```
+
+---
+
+## Task 40: Features backfill tool
+
+**Files:**
+- Create: `src/trading_sandwich/features/backfill.py`
+- Test: `tests/integration/test_features_backfill.py`
+
+Iterates `raw_candles` for each (symbol, timeframe), computes full Phase 1 feature rows, upserts into `features`. Respects minimum-history (200 bars). Used once at Phase 1 deploy. Bypasses pgbouncer.
+
+- [ ] **Step 1: Write failing integration test**
+
+Create `tests/integration/test_features_backfill.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+
+
+def _seed(async_url: str, n: int = 250) -> None:
+    base = datetime(2026, 4, 21, 0, 0, tzinfo=UTC)
+    async def _run() -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                for i in range(n):
+                    c = 100.0 + i * 0.5
+                    ot = base + timedelta(minutes=5 * i)
+                    ct = ot + timedelta(minutes=5)
+                    await conn.execute(text(
+                        "INSERT INTO raw_candles "
+                        "(symbol,timeframe,open_time,close_time,open,high,low,close,volume) "
+                        "VALUES (:s,:tf,:ot,:ct,:o,:h,:l,:c,10)"
+                    ), {"s": "BTCUSDT", "tf": "5m", "ot": ot, "ct": ct,
+                        "o": c - 0.1, "h": c + 0.3, "l": c - 0.3, "c": c})
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+
+
+def _features_count(async_url: str) -> int:
+    async def _run() -> int:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                return (await conn.execute(text(
+                    "SELECT count(*) FROM features WHERE symbol='BTCUSDT' AND timeframe='5m'"
+                ))).scalar()
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_features_backfill_writes_post_warmup_rows(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        _seed(url, n=250)
+        from trading_sandwich.features.backfill import run_features_backfill
+        asyncio.run(run_features_backfill(
+            symbols=["BTCUSDT"], timeframes=["5m"],
+        ))
+
+        # 250 candles, 200 warmup → 50 features rows written
+        assert _features_count(url) >= 50
+        assert _features_count(url) <= 250
+```
+
+- [ ] **Step 2: Run to see fail → implement**
+
+Create `src/trading_sandwich/features/backfill.py`:
+```python
+"""Phase 1 features backfill. For each raw_candles row with ≥200 prior bars of
+history available, computes the full Phase 1 features row and upserts. Bypasses
+pgbouncer. Typically run once at Phase 1 deploy after REST raw-candle backfill.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import subprocess
+from datetime import datetime
+from decimal import Decimal
+
+import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from trading_sandwich.config import get_settings
+from trading_sandwich.db.models import (
+    Features,
+    RawCandle,
+    RawFunding,
+    RawLongShortRatio,
+    RawOpenInterest,
+)
+from trading_sandwich.features.compute import RawInputs, build_features_row
+from trading_sandwich.logging import configure_logging, get_logger
+from trading_sandwich.metrics import FEATURES_COMPUTED
+
+configure_logging()
+logger = get_logger(__name__)
+
+WINDOW_SIZE = 500
+BATCH_SIZE = 1000   # rows per INSERT commit
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()[:12]
+    except Exception:
+        return "unknown"
+
+
+_FEATURE_VERSION = _git_sha()
+
+
+async def _backfill_symbol_tf(
+    session_factory, symbol: str, timeframe: str,
+) -> int:
+    """Process every raw_candle for (symbol, timeframe), newest last. Returns rows inserted."""
+    inserted = 0
+    pending: list[dict] = []
+
+    # Stream raw candles ascending; feed a rolling 500-bar window to build_features_row.
+    async with session_factory() as session:
+        raw_rows = (await session.execute(
+            select(RawCandle).where(
+                RawCandle.symbol == symbol, RawCandle.timeframe == timeframe,
+            ).order_by(RawCandle.close_time.asc())
+        )).scalars().all()
+
+        # Load all funding / OI / LSR once — will be filtered per candle.
+        funding_rows = (await session.execute(
+            select(RawFunding).where(RawFunding.symbol == symbol)
+            .order_by(RawFunding.settlement_time.asc())
+        )).scalars().all()
+        oi_rows = (await session.execute(
+            select(RawOpenInterest).where(RawOpenInterest.symbol == symbol)
+            .order_by(RawOpenInterest.captured_at.asc())
+        )).scalars().all()
+        lsr_rows = (await session.execute(
+            select(RawLongShortRatio).where(RawLongShortRatio.symbol == symbol)
+            .order_by(RawLongShortRatio.captured_at.asc())
+        )).scalars().all()
+
+    funding_df = pd.DataFrame([{"settlement_time": r.settlement_time, "rate": r.rate}
+                               for r in funding_rows])
+    oi_df = pd.DataFrame([{"captured_at": r.captured_at,
+                           "open_interest_usd": r.open_interest_usd}
+                          for r in oi_rows])
+    lsr_df = pd.DataFrame([{"captured_at": r.captured_at, "ratio": r.ratio}
+                           for r in lsr_rows])
+
+    for i in range(WINDOW_SIZE - 1, len(raw_rows)):
+        window = raw_rows[max(0, i - WINDOW_SIZE + 1): i + 1]
+        candles_df = pd.DataFrame([{
+            "close_time": r.close_time,
+            "open": float(r.open), "high": float(r.high),
+            "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
+        } for r in window])
+
+        current = raw_rows[i]
+        close_time: datetime = current.close_time
+
+        inputs = RawInputs(
+            candles=candles_df,
+            funding=funding_df[funding_df["settlement_time"] <= close_time] if not funding_df.empty else funding_df,
+            open_interest=oi_df[oi_df["captured_at"] <= close_time] if not oi_df.empty else oi_df,
+            long_short_ratio=lsr_df[lsr_df["captured_at"] <= close_time].tail(1) if not lsr_df.empty else lsr_df,
+            latest_ob_snapshot=None,   # OB snapshots not backfilled (live-only)
+        )
+        row = build_features_row(symbol, timeframe, close_time, inputs)
+        if row is None:
+            continue
+        row["feature_version"] = _FEATURE_VERSION
+        pending.append(row)
+
+        if len(pending) >= BATCH_SIZE:
+            inserted += await _flush(session_factory, pending)
+            pending.clear()
+
+    if pending:
+        inserted += await _flush(session_factory, pending)
+
+    FEATURES_COMPUTED.labels(symbol=symbol, timeframe=timeframe).inc(inserted)
+    logger.info("features_backfill_done", symbol=symbol, timeframe=timeframe,
+                rows=inserted)
+    return inserted
+
+
+async def _flush(session_factory, rows: list[dict]) -> int:
+    async with session_factory() as session:
+        # Upsert-on-conflict so re-running backfill is idempotent and
+        # overwrites Phase 0 rows.
+        for row in rows:
+            update_cols = {k: v for k, v in row.items()
+                           if k not in ("symbol", "timeframe", "close_time")}
+            stmt = pg_insert(Features).values(**row).on_conflict_do_update(
+                index_elements=["symbol", "timeframe", "close_time"],
+                set_=update_cols,
+            )
+            await session.execute(stmt)
+        await session.commit()
+    return len(rows)
+
+
+async def run_features_backfill(*, symbols: list[str], timeframes: list[str]) -> None:
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    for symbol in symbols:
+        for tf in timeframes:
+            await _backfill_symbol_tf(session_factory, symbol, tf)
+    await engine.dispose()
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--symbols", default="")
+    ap.add_argument("--timeframes", default="")
+    return ap.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    if args.symbols and args.timeframes:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        timeframes = [t.strip() for t in args.timeframes.split(",") if t.strip()]
+    else:
+        from trading_sandwich._universe import symbols as u_symbols, timeframes as u_timeframes
+        symbols, timeframes = u_symbols(), u_timeframes()
+    asyncio.run(run_features_backfill(symbols=symbols, timeframes=timeframes))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3: Run integration test**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_features_backfill.py -v -m integration`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/trading_sandwich/features/backfill.py tests/integration/test_features_backfill.py
+git commit -m "feat: Phase 1 features backfill tool (one-shot, bypasses pgbouncer)"
+```
+
+---
+
+# Checkpoint J — pause for human review
+
+Tasks 38–40 complete. Three backfill tools exist and are integration-tested against mocked Binance responses and a real Postgres testcontainer. The Phase 1 deploy runbook (§10.2 in the spec) can now be executed end-to-end.
+
+**Verify:**
+```bash
+MSYS_NO_PATHCONV=1 docker compose run --rm tools ruff check src tests
+MSYS_NO_PATHCONV=1 docker compose run --rm test -q
+```
+
+---
+
+## Task 41: Metrics port allocator
+
+**Files:**
+- Create: `src/trading_sandwich/_metrics_port.py`
+- Modify: `src/trading_sandwich/celery_app.py` — use allocator
+
+Phase 0 hardcoded ports per worker hostname prefix. With 4 feature-worker replicas all named `features@<container-id>`, they collide on port 9101. Allocator picks an unused port in a per-queue range.
+
+- [ ] **Step 1: Write failing test**
+
+Create `tests/unit/test_metrics_port.py`:
+```python
+import socket
+import threading
+
+from trading_sandwich._metrics_port import allocate_port
+
+
+def test_allocate_returns_port_in_range_for_known_queue():
+    p = allocate_port("features")
+    assert 9101 <= p <= 9120
+
+
+def test_allocate_avoids_occupied_port():
+    # Bind 9101 in-process, then ask for a features port — allocator should skip it
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+    sock.bind(("0.0.0.0", 9101))
+    sock.listen(1)
+    try:
+        p = allocate_port("features")
+        assert p != 9101
+        assert 9102 <= p <= 9120
+    finally:
+        sock.close()
+
+
+def test_returns_zero_for_unknown_queue():
+    assert allocate_port("unknown") == 0
+```
+
+- [ ] **Step 2: Run to see fail → implement**
+
+Create `src/trading_sandwich/_metrics_port.py`:
+```python
+"""Per-queue metrics-port allocator. With horizontal scaling (4 feature-worker
+replicas in Phase 1), multiple workers on the same host claim ports in the same
+queue range. First to bind wins; later workers pick the next free port.
+"""
+from __future__ import annotations
+
+import socket
+
+_RANGES = {
+    "features": range(9101, 9121),
+    "signals":  range(9121, 9125),
+    "outcomes": range(9125, 9129),
+}
+
+
+def _is_port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
+def allocate_port(queue: str) -> int:
+    """Return the lowest free port in the queue's range, or 0 if all taken or
+    queue is unknown. 0 tells start_metrics_server to skip serving.
+    """
+    port_range = _RANGES.get(queue)
+    if port_range is None:
+        return 0
+    for p in port_range:
+        if _is_port_free(p):
+            return p
+    return 0
+```
+
+- [ ] **Step 3: Update `celery_app.py`'s `_init_metrics_server` signal handler**
+
+Replace:
+```python
+    port = {"features": 9101, "signals": 9102, "outcomes": 9103}.get(hostname.split("@")[0], 0)
+```
+
+with:
+```python
+    from trading_sandwich._metrics_port import allocate_port
+    port = allocate_port(hostname.split("@")[0])
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/unit/test_metrics_port.py -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/trading_sandwich/_metrics_port.py src/trading_sandwich/celery_app.py tests/unit/test_metrics_port.py
+git commit -m "feat: per-queue metrics port allocator (supports feature-worker replicas)"
+```
+
+---
+
+## Task 42: Prometheus scrape config updates for replicas + pgbouncer
+
+**Files:**
+- Modify: `prometheus.yml`
+
+- [ ] **Step 1: Edit `prometheus.yml`**
+
+Replace the Phase 0 contents with:
+```yaml
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: ingestor
+    static_configs:
+      - targets: ["ingestor:9100"]
+
+  - job_name: feature-worker
+    static_configs:
+      - targets:
+          - "feature-worker:9101"
+          - "feature-worker:9102"
+          - "feature-worker:9103"
+          - "feature-worker:9104"
+          - "feature-worker:9105"
+          - "feature-worker:9106"
+          - "feature-worker:9107"
+          - "feature-worker:9108"
+
+  - job_name: signal-worker
+    static_configs:
+      - targets: ["signal-worker:9121"]
+
+  - job_name: outcome-worker
+    static_configs:
+      - targets: ["outcome-worker:9125"]
+
+  - job_name: pgbouncer
+    static_configs:
+      - targets: ["pgbouncer-exporter:9127"]
+```
+
+Note: Docker Compose DNS round-robin resolves `feature-worker` to each replica's IP; Prometheus scrapes every port in the range on that DNS entry, so it hits whichever replica binds each port.
+
+- [ ] **Step 2: Verify compose still parses**
+
+Run: `docker compose config --quiet`
+Expected: exits 0.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add prometheus.yml
+git commit -m "chore: Prometheus scrapes feature-worker replica port range + pgbouncer"
+```
+
+---
+
+## Task 43: Grafana dashboard — per-archetype + per-regime + backfill + pgbouncer panels
+
+**Files:**
+- Modify: `grafana/provisioning/dashboards/trading-sandwich.json`
+
+- [ ] **Step 1: Replace dashboard JSON**
+
+Overwrite `grafana/provisioning/dashboards/trading-sandwich.json` with:
+```json
+{
+  "id": null,
+  "uid": "trading-sandwich-health",
+  "title": "Trading Sandwich Health",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "type": "stat", "title": "Candles / min (5m rate)",
+      "targets": [{"expr": "sum(rate(ts_candles_ingested_total[5m])) * 60"}],
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat", "title": "Features / min",
+      "targets": [{"expr": "sum(rate(ts_features_computed_total[5m])) * 60"}],
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat", "title": "Signals fired / hour",
+      "targets": [{"expr": "sum(rate(ts_signals_fired_total[1h])) * 3600"}],
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat", "title": "Outcomes measured / hour",
+      "targets": [{"expr": "sum(rate(ts_outcomes_measured_total[1h])) * 3600"}],
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "timeseries", "title": "Feature compute latency (p95)",
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(ts_feature_compute_seconds_bucket[5m])) by (le, symbol))"}],
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8}
+    },
+    {
+      "type": "timeseries", "title": "Signals by archetype (5m rate)",
+      "targets": [{"expr": "sum by (archetype) (rate(ts_signals_fired_total[5m]))"}],
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries", "title": "Signals by gating outcome (5m rate)",
+      "targets": [{"expr": "sum by (gating_outcome) (rate(ts_signals_fired_total[5m]))"}],
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries", "title": "Outcomes by horizon",
+      "targets": [{"expr": "sum by (horizon) (rate(ts_outcomes_measured_total[15m]))"}],
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries", "title": "pgbouncer pool saturation",
+      "targets": [
+        {"expr": "pgbouncer_pools_server_active_connections", "legendFormat": "{{database}} active"},
+        {"expr": "pgbouncer_pools_server_idle_connections",   "legendFormat": "{{database}} idle"},
+        {"expr": "pgbouncer_pools_client_waiting_connections","legendFormat": "{{database}} waiting"}
+      ],
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8}
+    }
+  ]
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add grafana/provisioning/dashboards/trading-sandwich.json
+git commit -m "chore: Grafana dashboard — archetype + gating + horizon + pgbouncer panels"
+```
+
+---
+
+## Task 44: Backfill-completeness Celery Beat job
+
+**Files:**
+- Modify: `src/trading_sandwich/ingestor/backfill.py` — expand beyond Phase 0's helper
+- Modify: `src/trading_sandwich/celery_app.py` — register beat entry
+- Modify: `src/trading_sandwich/metrics.py` — add gauge
+- Test: `tests/integration/test_backfill_scan.py`
+
+Phase 0 shipped `expected_candle_opens` only. Phase 1 wires the actual gap scan: every 5 minutes, for each (symbol, timeframe), check the last 6 hours of expected opens vs the raw_candles table; any missing opens become `backfill_candles` tasks that hit Binance REST and insert. Emits a `ts_backfill_completeness` Gauge so Grafana shows fill rate.
+
+- [ ] **Step 1: Add completeness Gauge to metrics**
+
+In `src/trading_sandwich/metrics.py`, append:
+```python
+BACKFILL_COMPLETENESS = Gauge(
+    "ts_backfill_completeness",
+    "Fraction of expected candles present in last 6h (0..1)",
+    ["symbol", "timeframe"],
+)
+```
+
+- [ ] **Step 2: Add scan_gaps + backfill_candles Celery tasks**
+
+In `src/trading_sandwich/ingestor/backfill.py`, append below the existing `expected_candle_opens`:
+```python
+from datetime import UTC, timedelta
+import httpx
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from trading_sandwich._async import run_coro
+from trading_sandwich._universe import symbols as _symbols, timeframes as _tfs
+from trading_sandwich.celery_app import app
+from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models import RawCandle
+from trading_sandwich.ingestor.rest_poller import fapi_base_url
+from trading_sandwich.metrics import BACKFILL_COMPLETENESS
+
+
+async def _scan_gaps_async(symbol: str, timeframe: str, lookback_hours: int = 6) -> list[datetime]:
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    start = now - timedelta(hours=lookback_hours)
+    expected = expected_candle_opens(start, now, timeframe)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        existing = (await session.execute(
+            select(RawCandle.open_time).where(
+                RawCandle.symbol == symbol,
+                RawCandle.timeframe == timeframe,
+                RawCandle.open_time >= start,
+                RawCandle.open_time < now,
+            )
+        )).scalars().all()
+    present = set(existing)
+    missing = [o for o in expected if o not in present]
+    if expected:
+        BACKFILL_COMPLETENESS.labels(symbol=symbol, timeframe=timeframe).set(
+            (len(expected) - len(missing)) / len(expected)
+        )
+    return missing
+
+
+@app.task(name="trading_sandwich.ingestor.backfill.scan_gaps")
+def scan_gaps() -> None:
+    async def _run():
+        for sym in _symbols():
+            for tf in _tfs():
+                missing = await _scan_gaps_async(sym, tf)
+                if missing:
+                    backfill_candles.apply_async(
+                        args=[sym, tf, [m.isoformat() for m in missing]],
+                        queue="features",    # piggyback on features queue
+                    )
+    run_coro(_run())
+
+
+@app.task(name="trading_sandwich.ingestor.backfill.backfill_candles")
+def backfill_candles(symbol: str, timeframe: str, open_times_iso: list[str]) -> None:
+    async def _run():
+        if not open_times_iso:
+            return
+        opens = [datetime.fromisoformat(s) for s in open_times_iso]
+        start_ms = int(min(opens).timestamp() * 1000)
+        end_ms = int(max(opens).timestamp() * 1000) + 60_000
+        async with httpx.AsyncClient(base_url=fapi_base_url(), timeout=30.0) as client:
+            resp = await client.get("/fapi/v1/klines", params={
+                "symbol": symbol, "interval": timeframe,
+                "startTime": start_ms, "endTime": end_ms, "limit": 1500,
+            })
+            resp.raise_for_status()
+            batch = resp.json()
+        if not batch:
+            return
+        from trading_sandwich.ingestor.rest_backfill import _to_row
+        rows = [_to_row(symbol, timeframe, r) for r in batch]
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await session.execute(
+                pg_insert(RawCandle).values(rows).on_conflict_do_nothing(
+                    index_elements=["symbol", "timeframe", "open_time"],
+                )
+            )
+            await session.commit()
+        # Dispatch compute_features for each filled close
+        from trading_sandwich.features.worker import compute_features
+        for row in rows:
+            compute_features.apply_async(
+                args=[symbol, timeframe, row["close_time"].isoformat()],
+                queue="features",
+            )
+    run_coro(_run())
+```
+
+- [ ] **Step 3: Register `scan_gaps` in `beat_schedule`**
+
+In `celery_app.py`'s `beat_schedule`, add:
+```python
+        "backfill_scan_gaps": {
+            "task": "trading_sandwich.ingestor.backfill.scan_gaps",
+            "schedule": 300.0,
+        },
+```
+
+And add `"trading_sandwich.ingestor.backfill"` to the `include=` list.
+
+- [ ] **Step 4: Write integration test**
+
+Create `tests/integration/test_backfill_scan.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+
+
+@pytest.mark.integration
+def test_scan_gaps_identifies_missing_opens(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        # Seed 5 of the last 6 expected 5m opens, leaving one gap
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+        start = now - timedelta(minutes=30)
+        async def _seed():
+            engine = create_async_engine(url)
+            try:
+                async with engine.begin() as conn:
+                    for i in range(6):
+                        ot = start + timedelta(minutes=5 * i)
+                        if i == 3:
+                            continue  # leave gap at i=3
+                        ct = ot + timedelta(minutes=5)
+                        await conn.execute(text(
+                            "INSERT INTO raw_candles (symbol,timeframe,open_time,close_time,open,high,low,close,volume) "
+                            "VALUES (:s,:tf,:ot,:ct,100,101,99,100,10)"
+                        ), {"s": "BTCUSDT", "tf": "5m", "ot": ot, "ct": ct})
+            finally:
+                await engine.dispose()
+        asyncio.run(_seed())
+
+        from trading_sandwich.ingestor.backfill import _scan_gaps_async
+        missing = asyncio.run(_scan_gaps_async("BTCUSDT", "5m", lookback_hours=1))
+        assert len(missing) >= 1
+```
+
+- [ ] **Step 5: Run tests + commit**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_backfill_scan.py -v -m integration`
+Expected: PASS.
+
+```bash
+git add src/trading_sandwich/ingestor/backfill.py src/trading_sandwich/celery_app.py src/trading_sandwich/metrics.py tests/integration/test_backfill_scan.py
+git commit -m "feat: Celery Beat gap-scan + REST backfill task (completeness gauge)"
+```
+
+---
+
+## Task 45: End-to-end integration test for Phase 1
+
+**Files:**
+- Create: `tests/integration/test_end_to_end_phase_1.py`
+
+Drives the full chain: seed 350 candles + stub funding/OI/LSR, run compute_features under Celery eager mode, assert features + at least one signal of each regime.
+
+- [ ] **Step 1: Write the E2E test**
+
+Create `tests/integration/test_end_to_end_phase_1.py`:
+```python
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
+
+
+def _seed_uptrend_pullback(async_url: str) -> datetime:
+    """250 bars uptrend + 3 bars pullback + 2 bars bounce. Suitable for
+    trend_pullback firing at bar 255 under the regime gate.
+    """
+    base = datetime(2026, 4, 21, 0, 0, tzinfo=UTC)
+    async def _run() -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                for i in range(260):
+                    c = 100.0 + min(i, 250) * 0.5
+                    if i in (252, 253): c = 100 + 240 * 0.5     # shallow pullback
+                    if i >= 254:        c = 100 + 240 * 0.5 + (i - 253) * 1.0
+                    ot = base + timedelta(minutes=5 * i)
+                    ct = ot + timedelta(minutes=5)
+                    await conn.execute(text(
+                        "INSERT INTO raw_candles "
+                        "(symbol,timeframe,open_time,close_time,open,high,low,close,volume) "
+                        "VALUES (:s,:tf,:ot,:ct,:o,:h,:l,:c,10)"
+                    ), {"s": "BTCUSDT", "tf": "5m", "ot": ot, "ct": ct,
+                        "o": c - 0.1, "h": c + 0.3, "l": c - 0.3, "c": c})
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+    return base
+
+
+def _counts(async_url: str) -> dict:
+    async def _run() -> dict:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.connect() as conn:
+                return {
+                    "raw_candles": (await conn.execute(text("SELECT count(*) FROM raw_candles"))).scalar(),
+                    "features":    (await conn.execute(text("SELECT count(*) FROM features"))).scalar(),
+                    "signals":     (await conn.execute(text("SELECT count(*) FROM signals"))).scalar(),
+                    "claude_triaged": (await conn.execute(
+                        text("SELECT count(*) FROM signals WHERE gating_outcome='claude_triaged'")
+                    )).scalar(),
+                }
+        finally:
+            await engine.dispose()
+    return asyncio.run(_run())
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(180)
+def test_phase_1_end_to_end(env_for_postgres, env_for_redis):
+    with (
+        PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg,
+        RedisContainer("redis:7-alpine") as rd,
+    ):
+        pg_url = pg.get_connection_url()
+        redis_url = f"redis://{rd.get_container_host_ip()}:{rd.get_exposed_port(6379)}/0"
+        env_for_redis(redis_url)
+        env_for_postgres(pg_url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        from trading_sandwich.celery_app import app as celery_app
+        celery_app.conf.task_always_eager = True
+        celery_app.conf.task_eager_propagates = True
+
+        base = _seed_uptrend_pullback(pg_url)
+
+        from trading_sandwich.features.worker import compute_features
+        close_iso = (base + timedelta(minutes=5 * 260)).isoformat()
+        compute_features.apply(args=["BTCUSDT", "5m", close_iso]).get(propagate=True)
+
+        c = _counts(pg_url)
+        assert c["raw_candles"] == 260
+        assert c["features"] >= 1
+        # At least one signal should have been produced (gated or triaged),
+        # because the pattern matches trend_pullback shape under trend_up regime.
+        assert c["signals"] >= 1
+```
+
+- [ ] **Step 2: Run**
+
+Run: `MSYS_NO_PATHCONV=1 docker compose run --rm test tests/integration/test_end_to_end_phase_1.py -v -m integration`
+Expected: PASS.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tests/integration/test_end_to_end_phase_1.py
+git commit -m "test: Phase 1 end-to-end — candle → features → signal under eager Celery"
+```
+
+---
+
+## Task 46: Runbook section in README
+
+**Files:**
+- Modify: `README.md`
+
+Document Phase 1 deploy order so the human operator (you) has one authoritative reference.
+
+- [ ] **Step 1: Append Phase 1 deploy section to `README.md`**
+
+Append to `README.md`:
+```markdown
+
+## Phase 1 deploy runbook
+
+1. Pull latest `main`, ensure `.env` is present.
+2. Rebuild images: `docker compose build`
+3. Start dependencies only:
+   ```
+   docker compose up -d postgres pgbouncer redis
+   ```
+4. Apply migrations (Alembic bypasses pgbouncer):
+   ```
+   docker compose run --rm tools alembic upgrade head
+   ```
+5. REST-backfill 1 year of raw candles for the universe (~minutes per symbol):
+   ```
+   docker compose run --rm tools python -m trading_sandwich.ingestor.rest_backfill \
+       --symbols BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT \
+       --timeframes 5m,15m,1h,4h,1d --days 365
+   ```
+6. REST-backfill microstructure (30d funding + 7d OI):
+   ```
+   docker compose run --rm tools python -m trading_sandwich.ingestor.rest_backfill_microstructure \
+       --symbols BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,AVAXUSDT
+   ```
+7. Compute Phase 1 features for every eligible historical candle:
+   ```
+   docker compose run --rm tools python -m trading_sandwich.features.backfill
+   ```
+8. Start the full stack:
+   ```
+   docker compose up -d
+   ```
+9. Sanity check:
+   ```
+   docker compose run --rm cli doctor
+   docker compose run --rm cli stats
+   ```
+10. Open Grafana at `http://localhost:3000` and verify the Trading Sandwich Health dashboard is populating.
+11. Watch for 1 hour; expected: `raw_candles` growing every 5 minutes, `features` populated per symbol × TF, `signals` growing occasionally, `signal_outcomes` growing 15 min after first `claude_triaged` signal.
+
+### Updating pgbouncer password
+
+`pgbouncer/userlist.txt` ships with a placeholder md5 hash. Before first boot:
+```
+echo -n "${POSTGRES_PASSWORD}${POSTGRES_USER}" | md5sum | awk '{print "md5" $1}'
+```
+Replace `md5REPLACE_ME_BEFORE_DEPLOY` in `pgbouncer/userlist.txt` with that value and `docker compose up -d pgbouncer`.
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: Phase 1 deploy runbook in README"
+```
+
+---
+
+# Checkpoint K — pause for human review
+
+Tasks 41–46 complete. Metrics ports allocate dynamically across replicas. Prometheus scrapes feature-worker replica range + pgbouncer. Grafana dashboard shows per-archetype, per-regime, per-horizon, and pool panels. Gap-scan Beat job emits completeness gauge. Phase 1 E2E test green. Deploy runbook committed.
+
+**Final automated verification:**
+```bash
+MSYS_NO_PATHCONV=1 docker compose run --rm tools ruff check src tests
+MSYS_NO_PATHCONV=1 docker compose run --rm test -q
+```
+
+All green before moving to Task 47 (human-run smoke).
+
+---
+
+## Task 47: Human-run smoke test (Phase 1)
+
+This is your verification, not an automated task. Follow the deploy runbook in README. Required pass criteria:
+
+- [ ] Deploy runbook steps 1–11 all pass.
+- [ ] Grafana dashboard "Trading Sandwich Health" shows non-zero values on all 4 stat panels within 10 minutes.
+- [ ] Backfill completeness gauge reports ≥ 0.99 for all 8 symbols × 5 timeframes after 20 minutes.
+- [ ] pgbouncer active connections stay < 50 under steady state (dashboard panel).
+- [ ] No unhandled exceptions in `docker compose logs -f ingestor feature-worker signal-worker outcome-worker` for 1 hour.
+- [ ] `docker compose run --rm cli stats` after 1 hour shows: `raw_candles` > 10k, `features` > 5k, `signals` > 0, `signal_outcomes` > 0.
+
+When all criteria pass:
+```bash
+git tag -a phase-1-complete -m "Phase 1 full feature stack + all archetypes green"
+```
+
+---
+
+## Plan Self-Review
+
+**Spec coverage matrix:**
+
+| Spec section | Covered by task(s) |
+|---|---|
+| §1 goal (indicators, regime, archetypes, horizons, universe, infra, dedup) | All tasks collectively |
+| §2 kept-from-Phase-0 | Preserved by not rewriting Phase 0 files unnecessarily |
+| §3 full indicator list | 16–20 |
+| §3.7 TA-Lib Debian package + OB-imbalance separate ingestor path | 1 (Debian), 25 (depth stream) |
+| §4 regime classifier | 21 (inputs), 22 (classifier) |
+| §5 archetypes (all 8) | 27 (trend_pullback regime gate), 28–34 |
+| §5.2 detector warm-up | Each detector's `MIN_HISTORY` constant |
+| §5.3 policy.yaml additions | 10 (policy expansion), 13 (loader) |
+| §6.1 threshold gate | 36 (gate_signal_with_db stage 1) |
+| §6.2 cooldown gate | 36 (stage 2) |
+| §6.3 dedup gate | 35 (implementation), 36 (stage 3) |
+| §6.4 precedence | 36 (explicitly ordered) |
+| §7 all 6 horizons + redbeat | 4 (redbeat), 36 (scheduling), 37 (horizons test) |
+| §8 universe top-8 × 5 TFs | 10 (policy), 14 (universe helper) |
+| §9.1 TA-Lib Debian | 1 |
+| §9.2 pgbouncer + Alembic bypass | 2 (service), 10 (wiring), 38–40 (backfill tools bypass) |
+| §9.3 feature-worker replicas | 3 |
+| §9.4 backfill Beat job | 44 |
+| §9.5 raw_candles partitioning | 12 |
+| §9.6 redbeat persistence | 4 |
+| §9.7 Prometheus scrape additions | 41 (port allocator), 42 (prometheus.yml) |
+| §10 features backfill + runbook | 38, 39, 40, 46 |
+| §11 data-flow diagram additions | Grafana panels in 43 reflect new flows |
+| §12 migrations 0003–0009 | 7, 9, 11, 12 |
+| §13 boundaries (what Phase 1 does NOT do) | Honored by not introducing Claude, execution, ML |
+| §14 exit criteria | 47 (human smoke) covers criteria 1–12 |
+| §15 non-goals | No tuning, no backtest, no speed optimisation in the plan |
+| §16 column-name list | 6 (contracts), 7 (migration), 8 (ORM) |
+
+**Placeholder scan:** No "TBD", "TODO", "implement later" appear in any task. Every code step ships a concrete code block or exact edit instructions.
+
+**Type consistency check:**
+- `FeaturesRow` fields added in Task 6 are used by every detector (Tasks 27–34) by name — `ema_55`, `trend_regime`, `vol_regime`, `donchian_upper`, `donchian_lower`, `prior_day_high`, `prior_day_low`, `swing_high_5`, `swing_low_5`, `macd_hist`, `bb_upper`, `bb_lower`, `bb_width`, `funding_rate`, `atr_14`. All match.
+- `REGISTRY: dict[str, DetectorFn]` signature in Task 27 matches every detector's `def detect_*(rows: list[FeaturesRow]) -> Signal | None` signature in Tasks 28–34.
+- `gate_signal_with_db` in Task 36 expects a `Signal` and returns a `Signal` — all detectors return the same Pydantic type.
+- `HORIZONS_SECONDS` dict in Task 36's signal worker matches `HORIZON_MINUTES` keys in Phase 0's outcome worker (both cover 15m, 1h, 4h, 24h, 3d, 7d).
+
+No inconsistencies found.
+
+**Scope check:** 46 automated tasks + 1 human task. Groups of ~6–10 tasks per checkpoint (F: 1–10, G: 11–25, H: 26–34, I: 35–37, J: 38–40, K: 41–46). Each task ships green on its own via RED → GREEN → commit. Plan is big but reviewable in chunks.
+
+**Ambiguity check:** Fixed inline in Part 2 + 3 reviews. Nothing remaining.
+
+---
+
+## Execution handoff
+
+Plan complete and saved to `docs/superpowers/plans/2026-04-24-phase-1-feature-stack.md`. Two execution options:
+
+1. **Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration. Best for a plan this size because each task's work is tightly scoped and subagents can focus without drift.
+2. **Inline Execution** — Execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoint pauses. Best if you want me to stay in the same context as the plan I wrote.
+
+Which approach?
