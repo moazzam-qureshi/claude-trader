@@ -94,6 +94,7 @@ def _init_metrics_server(sender=None, **kwargs) -> None:
     """
     from trading_sandwich.metrics import start_metrics_server
 
+    from trading_sandwich._metrics_port import allocate_port
     hostname = (sender.hostname if sender and getattr(sender, "hostname", None) else "") or ""
-    port = {"features": 9101, "signals": 9102, "outcomes": 9103}.get(hostname.split("@")[0], 0)
+    port = allocate_port(hostname.split("@")[0])
     start_metrics_server(port)
