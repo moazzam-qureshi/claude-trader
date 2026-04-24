@@ -15,6 +15,33 @@ services:
       interval: 5s
       retries: 10
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    environment:
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      POOL_MODE: session
+      MAX_CLIENT_CONN: 100
+      DEFAULT_POOL_SIZE: 20
+    depends_on:
+      postgres: {condition: service_healthy}
+    ports:
+      - "6432:6432"
+
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:latest
+    restart: unless-stopped
+    environment:
+      PGBOUNCER_EXPORTER_HOST: 0.0.0.0
+      PGBOUNCER_EXPORTER_PORT: 9127
+      PGBOUNCER_CONNECTION_STRING: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/pgbouncer?sslmode=disable
+    depends_on:
+      - pgbouncer
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

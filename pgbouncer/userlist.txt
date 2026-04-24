@@ -1,0 +1,1 @@
+"trading" "md5REPLACE_ME_BEFORE_DEPLOY"
