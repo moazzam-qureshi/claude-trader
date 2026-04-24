@@ -35,8 +35,9 @@ def _seed_features(async_url: str) -> datetime:
                         ema = close - 0.5
                     await conn.execute(text(
                         "INSERT INTO features "
-                        "(symbol,timeframe,close_time,close_price,ema_21,rsi_14,atr_14,feature_version) "
-                        "VALUES (:s,:t,:ct,:cp,:e,:r,:a,:v)"
+                        "(symbol,timeframe,close_time,close_price,ema_21,rsi_14,atr_14,"
+                        "trend_regime,vol_regime,feature_version) "
+                        "VALUES (:s,:t,:ct,:cp,:e,:r,:a,'trend_up','normal',:v)"
                     ), {"s": "BTCUSDT", "t": "1m",
                         "ct": base + timedelta(minutes=i),
                         "cp": close, "e": ema, "r": rsi, "a": 1.0, "v": "test"})
