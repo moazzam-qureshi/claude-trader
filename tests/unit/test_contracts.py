@@ -57,3 +57,45 @@ def test_outcome_horizon_enum():
             mfe_pct=Decimal("0.02"), mae_pct=Decimal("-0.005"),
             stop_hit_1atr=False, target_hit_2atr=False,
         )
+
+
+_PHASE_1_ARCHETYPES = [
+    "trend_pullback", "squeeze_breakout",
+    "divergence_rsi", "divergence_macd",
+    "range_rejection",
+    "liquidity_sweep_daily", "liquidity_sweep_swing",
+    "funding_extreme",
+]
+
+
+def test_all_phase_1_archetypes_accepted():
+    for arch in _PHASE_1_ARCHETYPES:
+        s = Signal(
+            signal_id=uuid4(), symbol="BTCUSDT", timeframe="5m",
+            archetype=arch,
+            fired_at=datetime.now(UTC),
+            candle_close_time=datetime.now(UTC),
+            trigger_price=Decimal("100"), direction="long",
+            confidence=Decimal("0.7"),
+            confidence_breakdown={},
+            gating_outcome="below_threshold",
+            features_snapshot={},
+            detector_version="test",
+        )
+        assert s.archetype == arch
+
+
+def test_unknown_archetype_rejected():
+    with pytest.raises(ValidationError):
+        Signal(
+            signal_id=uuid4(), symbol="BTCUSDT", timeframe="5m",
+            archetype="nonexistent_archetype",
+            fired_at=datetime.now(UTC),
+            candle_close_time=datetime.now(UTC),
+            trigger_price=Decimal("100"), direction="long",
+            confidence=Decimal("0.7"),
+            confidence_breakdown={},
+            gating_outcome="below_threshold",
+            features_snapshot={},
+            detector_version="test",
+        )

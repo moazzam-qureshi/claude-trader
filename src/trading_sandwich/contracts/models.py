@@ -15,8 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 Horizon = Literal["15m", "1h", "4h", "24h", "3d", "7d"]
 Direction = Literal["long", "short"]
 Archetype = Literal[
-    "trend_pullback", "squeeze_breakout", "divergence",
-    "liquidity_sweep", "funding_extreme", "range_rejection",
+    "trend_pullback",
+    "squeeze_breakout",
+    "divergence_rsi",
+    "divergence_macd",
+    "range_rejection",
+    "liquidity_sweep_daily",
+    "liquidity_sweep_swing",
+    "funding_extreme",
 ]
 GatingOutcome = Literal[
     "claude_triaged", "cooldown_suppressed", "dedup_suppressed",
