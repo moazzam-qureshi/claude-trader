@@ -31,6 +31,8 @@ def make_features_series(
             ema_21=Decimal(str(round(close + ema_offset, 4))),
             rsi_14=Decimal(str(round(rsi, 2))),
             atr_14=Decimal(str(round(atr, 4))),
+            trend_regime="trend_up",
+            vol_regime="normal",
             feature_version="test",
         ))
     return rows

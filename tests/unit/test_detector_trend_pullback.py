@@ -34,3 +34,44 @@ def test_no_fire_when_price_below_ema():
 def test_no_fire_when_insufficient_history():
     rows = make_features_series(n=5)
     assert detect_trend_pullback(rows) is None
+
+
+def test_does_not_fire_when_regime_is_range():
+    rows = make_features_series(
+        n=35, close_slope=0.5, rsi_values=[45] * 30 + [35] * 3 + [42] * 2,
+    )
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": rows[-2].close_price + Decimal("1.5"),
+        "rsi_14": Decimal("42"),
+        "ema_21": rows[-1].close_price - Decimal("0.5"),
+        "trend_regime": "range",
+        "vol_regime": "normal",
+    })
+    rows[-2] = rows[-2].model_copy(update={
+        "rsi_14": Decimal("35"),
+        "close_price": rows[-2].ema_21,
+        "trend_regime": "range", "vol_regime": "normal",
+    })
+    rows[-3] = rows[-3].model_copy(update={
+        "rsi_14": Decimal("38"),
+        "trend_regime": "range", "vol_regime": "normal",
+    })
+    assert detect_trend_pullback(rows) is None
+
+
+def test_does_not_fire_when_vol_regime_is_squeeze():
+    rows = make_features_series(
+        n=35, close_slope=0.5, rsi_values=[45] * 30 + [35] * 3 + [42] * 2,
+    )
+    rows[-1] = rows[-1].model_copy(update={
+        "close_price": rows[-2].close_price + Decimal("1.5"),
+        "rsi_14": Decimal("42"),
+        "ema_21": rows[-1].close_price - Decimal("0.5"),
+        "vol_regime": "squeeze",
+    })
+    rows[-2] = rows[-2].model_copy(update={
+        "rsi_14": Decimal("35"),
+        "close_price": rows[-2].ema_21,
+        "vol_regime": "squeeze",
+    })
+    assert detect_trend_pullback(rows) is None

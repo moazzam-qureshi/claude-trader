@@ -36,6 +36,12 @@ def detect_trend_pullback(rows: list[FeaturesRow]) -> Signal | None:
     previous = rows[-2]
     window = rows[-4:-1]
 
+    # Phase 1 regime gate
+    if current.trend_regime not in ("trend_up", "trend_down"):
+        return None
+    if current.vol_regime not in ("normal", "expansion"):
+        return None
+
     if current.ema_21 is None or current.rsi_14 is None or current.atr_14 is None:
         return None
     if any(r.ema_21 is None or r.rsi_14 is None for r in window):
