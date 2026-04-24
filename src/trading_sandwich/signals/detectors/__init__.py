@@ -8,6 +8,7 @@ from collections.abc import Callable
 from trading_sandwich.contracts.models import FeaturesRow, Signal
 from trading_sandwich.signals.detectors.divergence_macd import detect_divergence_macd
 from trading_sandwich.signals.detectors.divergence_rsi import detect_divergence_rsi
+from trading_sandwich.signals.detectors.liquidity_sweep_daily import detect_liquidity_sweep_daily
 from trading_sandwich.signals.detectors.range_rejection import detect_range_rejection
 from trading_sandwich.signals.detectors.squeeze_breakout import detect_squeeze_breakout
 from trading_sandwich.signals.detectors.trend_pullback import detect_trend_pullback
@@ -20,4 +21,5 @@ REGISTRY: dict[str, DetectorFn] = {
     "divergence_rsi": detect_divergence_rsi,
     "divergence_macd": detect_divergence_macd,
     "range_rejection": detect_range_rejection,
+    "liquidity_sweep_daily": detect_liquidity_sweep_daily,
 }
