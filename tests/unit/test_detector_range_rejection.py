@@ -18,6 +18,7 @@ def test_fires_on_range_low_rejection():
     # Most recent bar wicked below Donchian lower (95) but closed back inside
     rows[-1] = rows[-1].model_copy(update={
         "close_price": Decimal("97"),
+        "swing_high_5": Decimal("105"),
         "swing_low_5": Decimal("94.5"),
     })
     s = detect_range_rejection(rows)
@@ -32,6 +33,7 @@ def test_fires_on_range_high_rejection():
     rows[-1] = rows[-1].model_copy(update={
         "close_price": Decimal("108"),
         "swing_high_5": Decimal("110.5"),
+        "swing_low_5": Decimal("105"),
     })
     s = detect_range_rejection(rows)
     assert s is not None
@@ -43,6 +45,7 @@ def test_no_fire_in_trend_regime():
     _stamp_regime_and_donchian(rows, trend="trend_up")
     rows[-1] = rows[-1].model_copy(update={
         "close_price": Decimal("97"),
+        "swing_high_5": Decimal("105"),
         "swing_low_5": Decimal("94.5"),
     })
     assert detect_range_rejection(rows) is None
