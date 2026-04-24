@@ -134,3 +134,32 @@ def test_archetype_check_constraint_rejects_unknown(env_for_postgres):
             finally:
                 await engine.dispose()
         asyncio.run(_probe())
+
+
+@pytest.mark.integration
+def test_raw_candles_is_partitioned(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+
+        async def _probe() -> None:
+            engine = create_async_engine(url)
+            try:
+                async with engine.connect() as conn:
+                    row = (await conn.execute(text(
+                        "SELECT partstrat::text FROM pg_partitioned_table "
+                        "JOIN pg_class ON pg_partitioned_table.partrelid = pg_class.oid "
+                        "WHERE pg_class.relname = 'raw_candles'"
+                    ))).scalar_one_or_none()
+                    assert row == "r", f"raw_candles should be RANGE-partitioned, got {row!r}"
+
+                    child_count = (await conn.execute(text(
+                        "SELECT count(*) FROM pg_inherits "
+                        "JOIN pg_class parent ON pg_inherits.inhparent = parent.oid "
+                        "WHERE parent.relname = 'raw_candles'"
+                    ))).scalar()
+                    assert child_count >= 1, f"expected >=1 partition, got {child_count}"
+            finally:
+                await engine.dispose()
+        asyncio.run(_probe())
