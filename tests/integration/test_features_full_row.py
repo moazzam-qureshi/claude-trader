@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
-
 _REQUIRED_NON_NULL = [
     "close_price", "ema_21", "rsi_14", "atr_14",
     "ema_8", "ema_55",
