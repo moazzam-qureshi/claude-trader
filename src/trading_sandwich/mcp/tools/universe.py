@@ -3,17 +3,44 @@ assess_symbol_fit, mutate_universe."""
 from __future__ import annotations
 
 import os
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import select, text
 
+from trading_sandwich.contracts.heartbeat import (
+    UniverseEventType,
+    UniverseMutationRequest,
+)
 from trading_sandwich.db.engine import get_session_factory
+from trading_sandwich.db.models_heartbeat import UniverseEvent
 from trading_sandwich.db.models_phase2 import Position
 from trading_sandwich.mcp.server import mcp
+from trading_sandwich.notifications.discord import (
+    post_card as _post_card,
+    render_hard_limit_blocked_card,
+    render_universe_event_card,
+)
+from trading_sandwich.triage.universe_policy import (
+    HardLimitViolation,
+    apply_mutation,
+    load_universe,
+    validate_mutation,
+)
 
 
 POLICY_PATH = Path(os.environ.get("TS_POLICY_PATH", "/app/policy.yaml"))
+
+
+def _prompt_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, cwd="/app"
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 @mcp.tool()
@@ -94,3 +121,113 @@ async def assess_symbol_fit(symbol: str) -> dict:
     else:
         res["recommendation"] = "rejected"
     return res
+
+
+@mcp.tool()
+async def mutate_universe(
+    event_type: str,
+    symbol: str,
+    rationale: str,
+    reversion_criterion: str | None = None,
+    to_tier: str | None = None,
+    shift_id: int | None = None,
+) -> dict:
+    """Mutate the universe (add/promote/demote/remove/exclude/unexclude).
+
+    Validates against hard limits. On reject, records hard_limit_blocked
+    event and posts Discord. On accept, atomically updates policy.yaml,
+    records event, posts Discord.
+    """
+    req = UniverseMutationRequest(
+        event_type=UniverseEventType(event_type),
+        symbol=symbol,
+        to_tier=to_tier,
+        rationale=rationale,
+        reversion_criterion=reversion_criterion,
+    )
+    policy = load_universe(POLICY_PATH)
+    from_tier = policy.tier_of(symbol)
+    occurred_at = datetime.now(timezone.utc)
+    pv = _prompt_version()
+    factory = get_session_factory()
+
+    try:
+        validate_mutation(policy, req)
+    except HardLimitViolation as exc:
+        async with factory() as session:
+            row = UniverseEvent(
+                occurred_at=occurred_at,
+                shift_id=shift_id,
+                event_type=UniverseEventType.HARD_LIMIT_BLOCKED.value,
+                symbol=symbol,
+                rationale=rationale,
+                attempted_change={
+                    "event_type": event_type,
+                    "symbol": symbol,
+                    "from_tier": from_tier,
+                    "to_tier": to_tier,
+                    "rationale": rationale,
+                    "reversion_criterion": reversion_criterion,
+                },
+                blocked_by=exc.limit,
+                prompt_version=pv,
+            )
+            session.add(row)
+            await session.commit()
+            event_id = row.id
+        card = render_hard_limit_blocked_card(
+            occurred_at=occurred_at,
+            attempted={
+                "event_type": event_type, "symbol": symbol,
+                "from_tier": from_tier, "to_tier": to_tier,
+                "rationale": rationale,
+            },
+            blocked_by=exc.limit,
+        )
+        msg_id = await _post_card(card)
+        if msg_id:
+            async with factory() as session:
+                await session.execute(text(
+                    "UPDATE universe_events SET discord_posted=true, "
+                    "discord_message_id=:m WHERE id=:i"
+                ).bindparams(m=msg_id, i=event_id))
+                await session.commit()
+        return {"accepted": False, "blocked_by": exc.limit, "event_id": event_id}
+
+    apply_mutation(POLICY_PATH, policy, req)
+    async with factory() as session:
+        row = UniverseEvent(
+            occurred_at=occurred_at,
+            shift_id=shift_id,
+            event_type=event_type,
+            symbol=symbol,
+            from_tier=from_tier,
+            to_tier=to_tier,
+            rationale=rationale,
+            reversion_criterion=reversion_criterion,
+            prompt_version=pv,
+        )
+        session.add(row)
+        await session.commit()
+        event_id = row.id
+
+    card = render_universe_event_card(
+        occurred_at=occurred_at,
+        event_type=event_type,
+        symbol=symbol,
+        from_tier=from_tier,
+        to_tier=to_tier,
+        rationale=rationale,
+        reversion_criterion=reversion_criterion,
+        shift_id=shift_id,
+        diary_ref=None,
+    )
+    msg_id = await _post_card(card)
+    if msg_id:
+        async with factory() as session:
+            await session.execute(text(
+                "UPDATE universe_events SET discord_posted=true, "
+                "discord_message_id=:m WHERE id=:i"
+            ).bindparams(m=msg_id, i=event_id))
+            await session.commit()
+    return {"accepted": True, "event_id": event_id}
