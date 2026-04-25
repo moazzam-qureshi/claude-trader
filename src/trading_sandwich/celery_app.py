@@ -40,6 +40,7 @@ app = Celery(
         "trading_sandwich.execution.proposal_sweeper",
         "trading_sandwich.execution.worker",
         "trading_sandwich.execution.paper_match",
+        "trading_sandwich.execution.watchdog",
     ],
 )
 
@@ -61,6 +62,7 @@ app.conf.update(
         "trading_sandwich.execution.proposal_sweeper.*": {"queue": "triage"},
         "trading_sandwich.execution.worker.*": {"queue": "execution"},
         "trading_sandwich.execution.paper_match.*": {"queue": "execution"},
+        "trading_sandwich.execution.watchdog.*": {"queue": "execution"},
     },
     beat_schedule={
         # Microstructure pollers — one entry per (symbol x task),
@@ -100,6 +102,10 @@ app.conf.update(
         "paper_match_orders": {
             "task": "trading_sandwich.execution.paper_match.match",
             "schedule": 15.0,
+        },
+        "reconcile_positions": {
+            "task": "trading_sandwich.execution.watchdog.reconcile",
+            "schedule": 60.0,
         },
     },
     beat_scheduler="redbeat.RedBeatScheduler",
