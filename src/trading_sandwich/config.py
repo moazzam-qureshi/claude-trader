@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     binance_api_secret: str = ""
     binance_testnet: bool = True
 
+    discord_webhook_url: str = ""
+    discord_bot_token: str = ""
+    discord_operator_id: str = ""
+    discord_channel_id: str = ""
+
     @field_validator("universe_symbols", "universe_timeframes", mode="before")
     @classmethod
     def split_csv(cls, v: object) -> object:
