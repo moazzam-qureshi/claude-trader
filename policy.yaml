@@ -97,3 +97,51 @@ paper_starting_equity_usd: 10000
 
 # Kill-switch behaviour
 auto_flatten_on_kill: false
+
+# ---------- Phase 2.7 — Heartbeat trader ----------
+
+heartbeat:
+  pacing_mode: dynamic
+  interval_minutes:
+    min: 15
+    max: 240
+    default: 60
+  defaults_by_state:
+    no_open_positions_no_active_theses: 120
+    active_theses_no_positions: 60
+    open_positions_far_from_invalidation: 30
+    open_positions_near_invalidation: 15
+  daily_shift_cap: 60
+  weekly_shift_cap: 350
+  shift_timeout_seconds: 300
+
+universe:
+  tiers:
+    core:
+      symbols: [BTCUSDT, ETHUSDT]
+      size_multiplier: 1.0
+      max_concurrent_positions: 2
+      shift_attention: every_shift
+    watchlist:
+      symbols: [SOLUSDT, BNBUSDT]
+      size_multiplier: 0.5
+      max_concurrent_positions: 3
+      shift_attention: time_permitting
+    observation:
+      symbols: [LINKUSDT, ARBUSDT]
+      size_multiplier: 0.0
+      max_concurrent_positions: 0
+      shift_attention: weekly_sweep
+    excluded:
+      symbols: [SHIBUSDT, PEPEUSDT]
+      reason: "memecoin volatility uncorrelated with archetype set"
+  hard_limits:
+    min_24h_volume_usd_floor: 100000000
+    vol_30d_annualized_max_ceiling: 3.00
+    excluded_symbols_locked: [SHIBUSDT, PEPEUSDT]
+    core_promotions_operator_only: true
+    max_total_universe_size: 20
+    max_per_tier:
+      core: 4
+      watchlist: 8
+      observation: 12

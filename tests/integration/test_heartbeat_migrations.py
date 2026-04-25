@@ -48,6 +48,15 @@ _HEARTBEAT_SHIFTS_COLS = [
 ]
 
 
+_UNIVERSE_EVENTS_COLS = [
+    "id", "occurred_at", "shift_id",
+    "event_type", "symbol", "from_tier", "to_tier",
+    "rationale", "reversion_criterion",
+    "diary_ref", "discord_posted", "discord_message_id",
+    "attempted_change", "blocked_by", "prompt_version",
+]
+
+
 @pytest.mark.integration
 def test_heartbeat_shifts_table_exists(env_for_postgres):
     with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
@@ -64,3 +73,21 @@ def test_heartbeat_shifts_has_required_columns(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
         _check_columns(url, "heartbeat_shifts", _HEARTBEAT_SHIFTS_COLS)
+
+
+@pytest.mark.integration
+def test_universe_events_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "universe_events")
+
+
+@pytest.mark.integration
+def test_universe_events_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "universe_events", _UNIVERSE_EVENTS_COLS)
