@@ -67,11 +67,12 @@ async def _cooldown_violated_async(signal: Signal) -> bool:
 
 
 def gate_signal_with_db(signal: Signal) -> Signal:
-    """Four-stage gate applied strictly in order:
+    """Five-stage gate applied strictly in order:
        1. below_threshold
        2. cooldown_suppressed
        3. dedup_suppressed
-       4. daily_cap_hit  (Phase 2)
+       4. global_rate_limit (Phase 2.5: min minutes between any two triages)
+       5. daily_cap_hit
     First non-pass stage short-circuits.
     """
     threshold = get_confidence_threshold(signal.archetype)
@@ -89,7 +90,13 @@ def gate_signal_with_db(signal: Signal) -> Signal:
     ):
         return signal.model_copy(update={"gating_outcome": "dedup_suppressed"})
 
-    # Stage 4: daily triage cap (Phase 2)
+    # Stage 4: global rate limit — minimum minutes between any two triages
+    # regardless of archetype/symbol. Protects Claude Max session quota.
+    min_gap = _policy.get_min_minutes_between_triages()
+    if min_gap > 0 and run_coro(_global_rate_limited_async(signal, min_gap)):
+        return signal.model_copy(update={"gating_outcome": "rate_limited"})
+
+    # Stage 5: daily triage cap
     settings = get_settings()
     r = redis.from_url(settings.celery_broker_url, decode_responses=True)
     fired_utc = signal.fired_at.astimezone(timezone.utc) if signal.fired_at.tzinfo else signal.fired_at.replace(tzinfo=timezone.utc)
@@ -97,3 +104,21 @@ def gate_signal_with_db(signal: Signal) -> Signal:
         return signal.model_copy(update={"gating_outcome": "daily_cap_hit"})
 
     return signal.model_copy(update={"gating_outcome": "claude_triaged"})
+
+
+async def _global_rate_limited_async(signal: Signal, min_gap_min: int) -> bool:
+    """True if another claude_triaged signal fired within min_gap_min minutes."""
+    cutoff = signal.fired_at - timedelta(minutes=min_gap_min)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        last = (await session.execute(
+            select(SignalORM.fired_at)
+            .where(
+                SignalORM.gating_outcome == "claude_triaged",
+                SignalORM.fired_at >= cutoff,
+                SignalORM.fired_at <= signal.fired_at,
+            )
+            .order_by(SignalORM.fired_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+    return last is not None

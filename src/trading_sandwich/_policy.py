@@ -69,6 +69,13 @@ def get_claude_daily_triage_cap() -> int:
     return int(load_policy().get("claude_daily_triage_cap", 20))
 
 
+def get_min_minutes_between_triages() -> int:
+    """Global rate limit between any two claude_triaged signals.
+    Protects Claude Max session quota when multiple archetypes fire close
+    together. 0 disables the gate (fall back to per-archetype cooldowns)."""
+    return int(load_policy().get("min_minutes_between_triages", 0))
+
+
 def get_paper_starting_equity_usd() -> Decimal:
     return Decimal(str(load_policy().get("paper_starting_equity_usd", 10000)))
 

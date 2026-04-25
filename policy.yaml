@@ -68,7 +68,14 @@ default_stop_atr_multiple: 1.5
 default_rr_minimum: 1.5
 
 # Claude invocation cap (unused Phase 1; Phase 2 enforces)
-claude_daily_triage_cap: 50  # bumped for first-day soak; revisit after observing real fire rate
+claude_daily_triage_cap: 30  # daily ceiling — Claude Max budget
+
+# Global rate limit: minimum minutes between any two Claude triages
+# regardless of archetype/symbol/timeframe. 30min = up to 48/day if
+# every slot fires; in practice signals cluster so this caps a burst.
+# Protects Claude Max session-quota from being drained by simultaneous
+# archetype fires across symbols.
+min_minutes_between_triages: 30
 
 # Phase 2 execution posture
 trading_enabled: true

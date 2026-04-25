@@ -88,7 +88,18 @@ def invoke_claude(signal_id: UUID, workspace: Path, mode: str = "triage") -> Cla
         "mcp__binance__binanceOrderBook",
     ])
 
+    # Model + effort: Sonnet at low effort is the right choice for triage.
+    # We're making structured tool-call → JSON decisions, not multi-step
+    # research. Opus at default effort burns 5-10× the Max session quota
+    # for marginal-at-best decision quality on this task.
+    # Override either via env var if a more cautious model is needed for
+    # specific archetypes (Phase 3+).
+    model = os.environ.get("TRIAGE_CLAUDE_MODEL", "sonnet")
+    effort = os.environ.get("TRIAGE_CLAUDE_EFFORT", "low")
+
     cmd = _resolve_claude_cmd() + [
+        "--model", model,
+        "--effort", effort,
         "--strict-mcp-config",
         "--mcp-config", str(mcp_config),
         "--append-system-prompt-file", str(runtime_cwd / "CLAUDE.md"),
