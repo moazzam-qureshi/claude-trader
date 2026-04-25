@@ -36,6 +36,7 @@ app = Celery(
         "trading_sandwich.outcomes.worker",
         "trading_sandwich.ingestor.rest_tasks",
         "trading_sandwich.ingestor.backfill",
+        "trading_sandwich.triage.worker",
     ],
 )
 
@@ -53,6 +54,7 @@ app.conf.update(
         "trading_sandwich.features.worker.*": {"queue": "features"},
         "trading_sandwich.signals.worker.*": {"queue": "signals"},
         "trading_sandwich.outcomes.worker.*": {"queue": "outcomes"},
+        "trading_sandwich.triage.worker.*": {"queue": "triage"},
     },
     beat_schedule={
         # Microstructure pollers — one entry per (symbol x task),
