@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "trading": {
+      "url": "http://mcp-server:8765/sse",
+      "transport": "sse"
+    }
+  }
+}
