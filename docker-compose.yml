@@ -59,6 +59,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
     command: ["python", "-m", "trading_sandwich.ingestor.main"]
 
   feature-worker:
@@ -70,6 +72,8 @@ services:
       redis: {condition: service_healthy}
     deploy:
       replicas: 4
+    volumes:
+      - ./:/app
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "features", "-n", "features@%h", "--loglevel=info"]
 
@@ -80,6 +84,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "signals", "-n", "signals@%h", "--loglevel=info"]
 
@@ -90,6 +96,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "outcomes", "-n", "outcomes@%h", "--loglevel=info"]
 
@@ -153,6 +161,8 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
     command: ["celery", "-A", "trading_sandwich.celery_app", "beat",
               "--scheduler=redbeat.RedBeatScheduler", "--loglevel=info"]
 
