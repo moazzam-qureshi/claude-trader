@@ -61,3 +61,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Default cmd is overridden per service in compose.
 CMD ["python", "-c", "print('service entrypoint required via compose')"]
+
+
+FROM base AS triage-worker
+
+# Node.js + Claude Code CLI for the subprocess-based triage worker.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && rm -rf /var/lib/apt/lists/*
+
+# OAuth volume mount point — claude-oauth named volume is mounted here.
+RUN mkdir -p /root/.claude
+
+CMD ["python", "-c", "print('triage-worker entrypoint required via compose')"]

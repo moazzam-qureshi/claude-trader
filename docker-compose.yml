@@ -105,6 +105,47 @@ services:
     expose:
       - "8765"
 
+  triage-worker:
+    build:
+      context: .
+      target: triage-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mcp-server: {condition: service_started}
+    volumes:
+      - ./:/app
+      - claude-oauth:/root/.claude
+    environment:
+      TS_WORKSPACE: /app
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "triage", "-n", "triage@%h", "--loglevel=info"]
+
+  discord-listener:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
+    command: ["python", "-m", "trading_sandwich.discord.listener"]
+
+  execution-worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "execution", "-n", "execution@%h", "--loglevel=info"]
+
   celery-beat:
     build: .
     restart: unless-stopped
@@ -177,3 +218,4 @@ volumes:
   redis-data:
   prometheus-data:
   grafana-data:
+  claude-oauth:
