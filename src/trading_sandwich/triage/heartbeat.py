@@ -268,3 +268,25 @@ def heartbeat_tick_celery() -> None:
 def discord_retry_sweep_celery() -> None:
     from trading_sandwich.notifications.discord import retry_unposted_events
     asyncio.run(retry_unposted_events())
+
+
+# ---------------------------------------------------------------------------
+# State-drift detection helper
+# ---------------------------------------------------------------------------
+
+async def detect_state_drift(state_path: Path) -> dict:
+    """Compare STATE.md frontmatter open_positions to live DB count.
+
+    Returned shape: {state_says, db_says, drift}. The shift uses this in
+    the ORIENT step (CLAUDE.md §1.3); on drift, DB wins and STATE is rewritten.
+    """
+    from trading_sandwich.mcp.tools.universe import get_open_positions
+    from trading_sandwich.triage.state_io import read_state
+
+    fm, _ = read_state(state_path)
+    db_positions = await get_open_positions()
+    return {
+        "state_says": fm.open_positions,
+        "db_says": len(db_positions),
+        "drift": fm.open_positions != len(db_positions),
+    }
