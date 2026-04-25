@@ -15,6 +15,10 @@ logger = get_logger(__name__)
 
 app = typer.Typer(help="Trading Sandwich CLI")
 
+# Phase 2.7 — heartbeat trader subcommands.
+from trading_sandwich.cli_heartbeat import heartbeat_app  # noqa: E402
+app.add_typer(heartbeat_app, name="heartbeat")
+
 _PHASE_0_TABLES = [
     "raw_candles",
     "features",
