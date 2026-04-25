@@ -1,9 +1,21 @@
 # Phase 2 — Claude Triage, Approval Loop, and Execution (Paper + Live)
 
-> **Status:** Draft — awaiting user review
+> **Status:** Stage 1a shipped (2026-04-25); Stage 1b in planning.
 > **Author:** Claude (brainstormed 2026-04-25)
 > **Predecessors:** `2026-04-21-trading-sandwich-design.md` (Phase 0), `2026-04-24-phase-1-feature-stack.md` (Phase 1)
 > **Architecture reference:** `/architecture.md`
+>
+> **Stage 1a (commits `d51664a`–`70e3d63`)** delivered: 7 MCP tools,
+> migration 0010, daily-cap Redis gate wired into signal-worker, triage
+> Celery task with subprocess `claude -p`, Discord-button approval state
+> machine, proposal sweeper, end-to-end test of the approval loop. 201
+> tests pass.
+>
+> **Stage 1b** delivers the runnable system: compose services for
+> mcp-server / triage-worker / discord-listener / execution-worker;
+> paper + live adapters; 16 policy rails; kill-switch persistence;
+> position watchdog; CLI commands; Grafana panels; runtime/CLAUDE.md
+> persona + runtime/GOALS.md template.
 
 ---
 
@@ -143,6 +155,17 @@ Existing services (`postgres`, `pgbouncer`, `redis`, `ingestor`,
 `feature-worker × 4`, `signal-worker`, `outcome-worker`, `celery-beat`,
 `prometheus`, `grafana`) unchanged.
 
+**Image strategy (Stage 1a delta):** the existing `Dockerfile` hardcodes
+its dep list with `uv pip install --system <deps>` rather than reading
+`pyproject.toml`. New deps (`mcp[cli]`, `anyio`, `discord.py`) were
+added to both files in Stage 1a. Stage 1b adds the **triage-worker
+image** as a separate stage in the same Dockerfile (`FROM base AS
+triage-worker`) that layers on Node.js 20 + `@anthropic-ai/claude-code`
++ a named volume mount at `/root/.claude` for OAuth. The mcp-server,
+discord-listener, and execution-worker reuse the existing `base` image
+since they need only the Python deps. (Avoiding multi-image complexity
+unless needed.)
+
 ### 4.2 New Celery queues
 
 - `triage` — consumed only by `triage-worker`.
@@ -152,17 +175,23 @@ Existing queues (`features`, `signals`, `outcomes`) unchanged.
 
 ### 4.3 New workspace contract
 
-Repo root is bind-mounted as `/workspace` into the `triage-worker`
-container. The file layout Claude sees:
+Repo root is bind-mounted as `/app` into all containers (consistent with
+the existing `test`/`tools`/`worker` services in compose). The
+triage-worker, when spawning `claude -p`, sets `cwd=/app` (override via
+`TS_WORKSPACE` env var for tests). The file layout Claude sees:
 
 ```
-/workspace/
+/app/
   .mcp.json                   # tells Claude Code to connect to mcp-server
   runtime/
     CLAUDE.md                 # the persona + playbooks
     GOALS.md                  # narrative goals
   policy.yaml                 # the rails
 ```
+
+**Note (Stage 1a delta):** Earlier draft of this spec referenced
+`/workspace`; reconciled to `/app` to match the existing compose layout
+where `./` is bind-mounted to `/app`. Avoids a second mount path.
 
 `.mcp.json` declares one server:
 
