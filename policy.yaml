@@ -68,7 +68,7 @@ default_stop_atr_multiple: 1.5
 default_rr_minimum: 1.5
 
 # Claude invocation cap (unused Phase 1; Phase 2 enforces)
-claude_daily_triage_cap: 20
+claude_daily_triage_cap: 50  # bumped for first-day soak; revisit after observing real fire rate
 
 # Phase 2 execution posture
 trading_enabled: true
