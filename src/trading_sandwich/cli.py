@@ -65,5 +65,125 @@ def stats() -> None:
     asyncio.run(_counts())
 
 
+@app.command()
+def proposals(
+    status: str = typer.Option(None, help="Filter: pending|approved|rejected|expired|executed|failed"),
+) -> None:
+    """List trade_proposals rows."""
+    async def _list() -> None:
+        from sqlalchemy import select
+        from trading_sandwich.db.models_phase2 import TradeProposal
+        engine = get_engine()
+        try:
+            async with engine.connect() as conn:
+                stmt = select(TradeProposal)
+                if status:
+                    stmt = stmt.where(TradeProposal.status == status)
+                stmt = stmt.order_by(TradeProposal.proposed_at.desc()).limit(50)
+                rows = (await conn.execute(stmt)).all()
+                for r in rows:
+                    typer.echo(
+                        f"{r.proposal_id} {r.status} {r.symbol} {r.side} "
+                        f"${r.size_usd} expected_rr={r.expected_rr}"
+                    )
+        finally:
+            await engine.dispose()
+    asyncio.run(_list())
+
+
+@app.command()
+def orders(status: str = typer.Option(None)) -> None:
+    """List orders rows."""
+    async def _list() -> None:
+        from sqlalchemy import select
+        from trading_sandwich.db.models_phase2 import Order
+        engine = get_engine()
+        try:
+            async with engine.connect() as conn:
+                stmt = select(Order)
+                if status:
+                    stmt = stmt.where(Order.status == status)
+                stmt = stmt.order_by(Order.submitted_at.desc()).limit(50)
+                rows = (await conn.execute(stmt)).all()
+                for r in rows:
+                    typer.echo(
+                        f"{r.order_id} {r.status} {r.execution_mode} "
+                        f"{r.symbol} {r.side} ${r.size_usd}"
+                    )
+        finally:
+            await engine.dispose()
+    asyncio.run(_list())
+
+
+@app.command()
+def positions() -> None:
+    """List open positions."""
+    async def _list() -> None:
+        from sqlalchemy import select
+        from trading_sandwich.db.models_phase2 import Position
+        engine = get_engine()
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(
+                    select(Position).where(Position.closed_at.is_(None))
+                )).all()
+                for r in rows:
+                    typer.echo(
+                        f"{r.symbol} {r.side} size={r.size_base} entry={r.avg_entry} "
+                        f"unrealized={r.unrealized_pnl_usd}"
+                    )
+        finally:
+            await engine.dispose()
+    asyncio.run(_list())
+
+
+trading_app = typer.Typer(help="Kill-switch control")
+app.add_typer(trading_app, name="trading")
+
+
+@trading_app.command("status")
+def trading_status() -> None:
+    """Print kill-switch state."""
+    async def _check():
+        from trading_sandwich.execution.kill_switch import is_active
+        active = await is_active()
+        typer.echo(f"kill_switch: {'ACTIVE (trading paused)' if active else 'inactive'}")
+    asyncio.run(_check())
+
+
+@trading_app.command("pause")
+def trading_pause(reason: str = typer.Option(..., "--reason", help="Why pause?")) -> None:
+    """Trip the kill-switch (stops new orders)."""
+    async def _trip():
+        from trading_sandwich.execution.kill_switch import trip
+        await trip(reason=f"manual_pause: {reason}")
+        typer.echo(f"trading paused — {reason}")
+    asyncio.run(_trip())
+
+
+@trading_app.command("resume")
+def trading_resume(
+    ack_reason: str = typer.Option(..., "--ack-reason", help="Acknowledgement"),
+) -> None:
+    """Resume trading from kill-switch."""
+    async def _resume():
+        from trading_sandwich.execution.kill_switch import resume
+        await resume(ack_reason=ack_reason)
+        typer.echo(f"trading resumed — {ack_reason}")
+    asyncio.run(_resume())
+
+
+@app.command()
+def calibration(lookback_days: int = typer.Option(30)) -> None:
+    """Show median 24h return for alert vs ignore decisions."""
+    async def _report():
+        from trading_sandwich.execution.calibration import calibration_report
+        r = await calibration_report(lookback_days=lookback_days)
+        typer.echo(f"lookback: {r['lookback_days']}d")
+        typer.echo(f"alert    n={r['alert_count']}  median_24h_ret={r['alert_median_24h']}")
+        typer.echo(f"ignore   n={r['ignore_count']}  median_24h_ret={r['ignore_median_24h']}")
+    asyncio.run(_report())
+
+
 if __name__ == "__main__":
     app()
