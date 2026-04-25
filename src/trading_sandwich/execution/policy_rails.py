@@ -229,12 +229,21 @@ _RAILS_IN_ORDER = [
 ]
 
 
+_AUTO_TRIP_REASONS = {"max_daily_realized_loss_breached"}
+
+
 async def evaluate_policy(proposal) -> str | None:
-    """Run all rails in order. Returns the first block reason or None."""
+    """Run all rails in order. Returns the first block reason or None.
+    Auto-trips kill-switch on certain block reasons."""
     account = await _account_state()
     for rail in _RAILS_IN_ORDER:
         block = await rail(proposal, account)
         if block:
+            for reason in _AUTO_TRIP_REASONS:
+                if reason in block:
+                    from trading_sandwich.execution.kill_switch import trip
+                    await trip(reason=block)
+                    break
             return block
     return None
 
