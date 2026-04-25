@@ -126,6 +126,8 @@ async def _detect_async(symbol: str, timeframe: str, close_time_iso: str) -> Non
         ).inc()
         if gated.gating_outcome == "claude_triaged":
             _schedule_outcomes(gated)
+            from trading_sandwich.triage.worker import triage_signal
+            triage_signal.delay(str(gated.signal_id))
 
 
 @app.task(name="trading_sandwich.signals.worker.detect_signals")
