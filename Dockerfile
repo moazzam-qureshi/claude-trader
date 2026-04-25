@@ -49,6 +49,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       httpx>=0.27 \
       "mcp[cli]>=1.0" \
       anyio>=4 \
+      "python-frontmatter>=1.1" \
       "discord.py>=2.4" \
       pytest>=8.2 \
       pytest-asyncio>=0.23 \
