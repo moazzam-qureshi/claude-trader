@@ -30,3 +30,27 @@ scrape_configs:
   - job_name: pgbouncer
     static_configs:
       - targets: ["pgbouncer-exporter:9127"]
+
+  # Phase 2 workers. Triage + execution use _metrics_port allocator
+  # ranges 9129–9132 and 9133–9136 respectively. mcp-server fixed
+  # at 9100 (metrics endpoint to be wired alongside FastMCP in a
+  # follow-up; scrape target registered now so infra is ready).
+  - job_name: mcp-server
+    static_configs:
+      - targets: ["mcp-server:9100"]
+
+  - job_name: triage-worker
+    static_configs:
+      - targets:
+          - "triage-worker:9129"
+          - "triage-worker:9130"
+          - "triage-worker:9131"
+          - "triage-worker:9132"
+
+  - job_name: execution-worker
+    static_configs:
+      - targets:
+          - "execution-worker:9133"
+          - "execution-worker:9134"
+          - "execution-worker:9135"
+          - "execution-worker:9136"

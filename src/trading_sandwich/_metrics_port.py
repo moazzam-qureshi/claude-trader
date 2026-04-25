@@ -7,9 +7,11 @@ from __future__ import annotations
 import socket
 
 _RANGES = {
-    "features": range(9101, 9121),
-    "signals":  range(9121, 9125),
-    "outcomes": range(9125, 9129),
+    "features":  range(9101, 9121),
+    "signals":   range(9121, 9125),
+    "outcomes":  range(9125, 9129),
+    "triage":    range(9129, 9133),
+    "execution": range(9133, 9137),
 }
 
 
