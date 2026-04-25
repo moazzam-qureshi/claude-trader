@@ -1,6 +1,3 @@
-trading_enabled: false
-execution_mode: paper
-
 universe:
   - BTCUSDT
   - ETHUSDT
@@ -83,7 +80,7 @@ default_rr_minimum: 1.5
 claude_daily_triage_cap: 20
 
 # Phase 2 execution posture
-trading_enabled: false
+trading_enabled: true
 execution_mode: paper               # paper | live
 
 # Proposal lifecycle
