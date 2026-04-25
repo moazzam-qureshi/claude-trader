@@ -19,6 +19,7 @@ mcp = FastMCP("trading", json_response=True)
 from trading_sandwich.mcp.tools import (  # noqa: F401, E402
     alerts,
     decisions,
+    market_scan,
     proposals,
     reads,
     state_diary,
