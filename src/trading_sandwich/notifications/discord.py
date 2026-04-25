@@ -85,3 +85,57 @@ async def post_card(card: dict[str, Any]) -> str | None:
             return data.get("id")
     except Exception:
         return None
+
+
+async def retry_unposted_events(max_age_minutes: int = 1440) -> int:
+    """Retry Discord posts for events with discord_posted=false.
+
+    Returns count of events successfully posted.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from sqlalchemy import select, text as _sql_text
+
+    from trading_sandwich.db.engine import get_session_factory
+    from trading_sandwich.db.models_heartbeat import UniverseEvent
+
+    cutoff = datetime.now(_tz.utc) - timedelta(minutes=max_age_minutes)
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (await session.execute(
+            select(UniverseEvent).where(
+                UniverseEvent.discord_posted.is_(False),
+                UniverseEvent.occurred_at >= cutoff,
+            )
+        )).scalars().all()
+
+    posted = 0
+    for row in rows:
+        if row.event_type == "hard_limit_blocked":
+            card = render_hard_limit_blocked_card(
+                occurred_at=row.occurred_at,
+                attempted=row.attempted_change or {},
+                blocked_by=row.blocked_by or "unknown",
+            )
+        else:
+            card = render_universe_event_card(
+                occurred_at=row.occurred_at,
+                event_type=row.event_type,
+                symbol=row.symbol,
+                from_tier=row.from_tier,
+                to_tier=row.to_tier,
+                rationale=row.rationale,
+                reversion_criterion=row.reversion_criterion,
+                shift_id=row.shift_id,
+                diary_ref=row.diary_ref,
+            )
+        msg_id = await post_card(card)
+        if msg_id:
+            async with factory() as session:
+                await session.execute(_sql_text(
+                    "UPDATE universe_events SET discord_posted=true, "
+                    "discord_message_id=:m WHERE id=:i"
+                ).bindparams(m=msg_id, i=row.id))
+                await session.commit()
+            posted += 1
+    return posted
