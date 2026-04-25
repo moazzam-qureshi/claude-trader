@@ -23,14 +23,9 @@ class ProposalNotFound(Exception):
 
 
 def _enqueue_submit_order(proposal_id: UUID) -> None:
-    """Enqueues submit_order on the execution queue. Wired to execution-worker
-    in Stage 1b plan; for Stage 1a this is a stub that can be patched in tests.
-    """
-    try:
-        from trading_sandwich.execution.worker import submit_order
-        submit_order.delay(str(proposal_id))
-    except ImportError:
-        pass
+    """Enqueues submit_order on the execution queue."""
+    from trading_sandwich.execution.worker import submit_order
+    submit_order.delay(str(proposal_id))
 
 
 async def approve_proposal(proposal_id: UUID, approver: str) -> None:
