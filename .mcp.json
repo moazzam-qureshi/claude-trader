@@ -3,6 +3,20 @@
     "trading": {
       "url": "http://mcp-server:8765/sse",
       "transport": "sse"
+    },
+    "tradingview": {
+      "command": "tradingview-mcp",
+      "args": [],
+      "transport": "stdio"
+    },
+    "binance": {
+      "command": "binance-mcp",
+      "args": [],
+      "transport": "stdio",
+      "env": {
+        "BINANCE_API_KEY": "${BINANCE_API_KEY}",
+        "BINANCE_API_SECRET": "${BINANCE_API_SECRET}"
+      }
     }
   }
 }

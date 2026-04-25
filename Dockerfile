@@ -70,8 +70,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code binance-mcp \
     && rm -rf /var/lib/apt/lists/*
+
+# TradingView MCP (Python) — uses uv to install into system python
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system "tradingview-mcp-server>=0.7"
 
 # OAuth volume mount point — claude-oauth named volume is mounted here.
 RUN mkdir -p /root/.claude
