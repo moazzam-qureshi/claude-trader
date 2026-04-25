@@ -34,6 +34,12 @@ def test_phase2_paper_e2e_signal_to_order(env_for_postgres, env_for_redis, monke
                     "alert_posted": False, "proposal_created": True}),
     )
 
+    from trading_sandwich import _policy
+    monkeypatch.setattr(_policy, "is_trading_enabled", lambda: True)
+    monkeypatch.setattr(
+        _policy, "get_first_trade_size_multiplier", lambda: Decimal("1.0"),
+    )
+
     captured = []
     monkeypatch.setattr(
         "trading_sandwich.discord.approval._enqueue_submit_order",

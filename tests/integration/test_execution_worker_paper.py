@@ -13,8 +13,16 @@ from testcontainers.redis import RedisContainer
 
 @pytest.mark.integration
 def test_submit_order_paper_market_writes_filled_order(
-    env_for_postgres, env_for_redis,
+    env_for_postgres, env_for_redis, monkeypatch,
 ):
+    from decimal import Decimal as _D
+
+    from trading_sandwich import _policy
+    monkeypatch.setattr(_policy, "is_trading_enabled", lambda: True)
+    monkeypatch.setattr(
+        _policy, "get_first_trade_size_multiplier", lambda: _D("1.0"),
+    )
+
     from trading_sandwich.celery_app import app as celery_app
     from trading_sandwich.db.engine import get_session_factory
     from trading_sandwich.db.models import ClaudeDecision
