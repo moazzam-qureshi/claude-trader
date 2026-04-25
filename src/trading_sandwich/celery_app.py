@@ -12,13 +12,26 @@ from trading_sandwich.logging import configure_logging
 
 
 def _universe_symbols() -> list[str]:
-    """Read universe from policy.yaml. Local helper so celery_app.py doesn't
-    import trading_sandwich._universe (which would create a circular import
-    chain once _universe grows).
+    """Read tradeable universe from policy.yaml. Returns flat list across
+    core+watchlist+observation tiers (excluded tier is not polled).
+
+    Local helper so celery_app.py doesn't import trading_sandwich._universe
+    (which would create a circular import chain).
     """
     try:
         with open(Path("policy.yaml")) as f:
-            return list(yaml.safe_load(f)["universe"])
+            data = yaml.safe_load(f)
+        # Phase 2.7+: universe is tiered. Flatten core+watchlist+observation.
+        u = data.get("universe", {})
+        if isinstance(u, dict) and "tiers" in u:
+            symbols: list[str] = []
+            for tier in ("core", "watchlist", "observation"):
+                symbols.extend(u["tiers"].get(tier, {}).get("symbols", []))
+            return symbols
+        # Backwards compat: legacy flat-list format.
+        if isinstance(u, list):
+            return list(u)
+        return ["BTCUSDT", "ETHUSDT"]
     except FileNotFoundError:
         return ["BTCUSDT", "ETHUSDT"]
 
@@ -37,6 +50,7 @@ app = Celery(
         "trading_sandwich.ingestor.rest_tasks",
         "trading_sandwich.ingestor.backfill",
         "trading_sandwich.triage.worker",
+        "trading_sandwich.triage.heartbeat",
         "trading_sandwich.execution.proposal_sweeper",
         "trading_sandwich.execution.worker",
         "trading_sandwich.execution.paper_match",
@@ -59,6 +73,7 @@ app.conf.update(
         "trading_sandwich.signals.worker.*": {"queue": "signals"},
         "trading_sandwich.outcomes.worker.*": {"queue": "outcomes"},
         "trading_sandwich.triage.worker.*": {"queue": "triage"},
+        "trading_sandwich.triage.heartbeat.*": {"queue": "triage"},
         "trading_sandwich.execution.proposal_sweeper.*": {"queue": "triage"},
         "trading_sandwich.execution.worker.*": {"queue": "execution"},
         "trading_sandwich.execution.paper_match.*": {"queue": "execution"},
@@ -106,6 +121,18 @@ app.conf.update(
         "reconcile_positions": {
             "task": "trading_sandwich.execution.watchdog.reconcile",
             "schedule": 60.0,
+        },
+        # Phase 2.7 — heartbeat trader. Fires every 15 min (the min pacing
+        # interval). The task itself reads STATE.md and decides whether to
+        # actually spawn Claude or skip.
+        "heartbeat_tick": {
+            "task": "trading_sandwich.triage.heartbeat.heartbeat_tick_celery",
+            "schedule": 15 * 60.0,
+        },
+        # Discord notifier retry sweeper for unposted universe events.
+        "discord_universe_retry": {
+            "task": "trading_sandwich.triage.heartbeat.discord_retry_sweep_celery",
+            "schedule": 15 * 60.0,
         },
     },
     beat_scheduler="redbeat.RedBeatScheduler",
