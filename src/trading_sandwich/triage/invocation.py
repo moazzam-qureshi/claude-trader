@@ -39,6 +39,13 @@ def _resolve_claude_cmd() -> list[str]:
 def invoke_claude(signal_id: UUID, workspace: Path, mode: str = "triage") -> ClaudeResponse:
     """Spawn `claude -p`. Parse the final JSON line as a ClaudeResponse.
 
+    The agent runs with cwd=<workspace>/runtime so it auto-loads the
+    *trader* CLAUDE.md (the policy that says "you are a veteran trader,
+    here is your invocation contract"), not the *dev* CLAUDE.md at the
+    project root (which says "this is not the runtime brain"). The MCP
+    config is passed via --mcp-config so the three MCP servers
+    (trading + tradingview + binance) resolve regardless of cwd.
+
     Raises:
         InvocationTimeout: if CLAUDE_TIMEOUT_S is exceeded.
         InvocationError: if claude exits non-zero.
@@ -48,12 +55,52 @@ def invoke_claude(signal_id: UUID, workspace: Path, mode: str = "triage") -> Cla
     prompt_version = _git_sha(workspace)
     env = {**os.environ, "TS_PROMPT_VERSION": prompt_version}
 
-    cmd = _resolve_claude_cmd() + ["-p", f"{mode} {signal_id}"]
+    runtime_cwd = workspace / "runtime"
+    mcp_config = workspace / ".mcp.json"
+
+    # cwd=runtime so runtime/CLAUDE.md auto-loads via Claude Code's
+    # CLAUDE.md discovery — that's the trader brain.
+    # --mcp-config: explicit MCP server bundle.
+    # --strict-mcp-config: ignore user-level / claude.ai-account leak-ins.
+    # --append-system-prompt-file: belt-and-suspenders — ensure trader
+    # CLAUDE.md is in context even if discovery walks up the tree.
+    # --allowedTools: pre-authorize exactly the MCP tools the triage
+    # agent uses, including read-only verification calls. This avoids
+    # the per-call permission prompt (which blocks non-interactive runs)
+    # without using --dangerously-skip-permissions (root-blocked).
+    # Note: forbidden Binance order tools (per hard rule §5) are NOT
+    # allowlisted, so even if the agent tried, the call would be denied.
+    allowed_tools = ",".join([
+        # Our system MCP — all 7 tools.
+        "mcp__tsandwich__get_signal",
+        "mcp__tsandwich__get_market_snapshot",
+        "mcp__tsandwich__find_similar_signals",
+        "mcp__tsandwich__get_archetype_stats",
+        "mcp__tsandwich__save_decision",
+        "mcp__tsandwich__send_alert",
+        "mcp__tsandwich__propose_trade",
+        # Verification layer — TradingView (read-only). Wildcard the
+        # whole server since the agent may pick any.
+        "mcp__tradingview",
+        # Verification layer — Binance read-only.
+        "mcp__binance__binanceAccountInfo",
+        "mcp__binance__binanceAccountSnapshot",
+        "mcp__binance__binanceOrderBook",
+    ])
+
+    cmd = _resolve_claude_cmd() + [
+        "--strict-mcp-config",
+        "--mcp-config", str(mcp_config),
+        "--append-system-prompt-file", str(runtime_cwd / "CLAUDE.md"),
+        "--allowedTools", allowed_tools,
+        "-p", f"{mode} {signal_id}",
+    ]
 
     try:
         result = subprocess.run(
-            cmd, cwd=str(workspace), env=env,
+            cmd, cwd=str(runtime_cwd), env=env,
             capture_output=True, text=True, timeout=timeout_s,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise InvocationTimeout(
