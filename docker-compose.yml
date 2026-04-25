@@ -93,6 +93,18 @@ services:
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "outcomes", "-n", "outcomes@%h", "--loglevel=info"]
 
+  mcp-server:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+    volumes:
+      - ./:/app
+    command: ["python", "-m", "trading_sandwich.mcp.server", "sse"]
+    expose:
+      - "8765"
+
   celery-beat:
     build: .
     restart: unless-stopped
