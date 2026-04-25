@@ -7,20 +7,18 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("trading")
+# json_response=True returns application/json instead of SSE event-stream
+# for streamable-http transport (cleaner for HTTP clients).
+# Tools are registered via @mcp.tool() decorators in tools/*.py imported below.
+mcp = FastMCP("trading", json_response=True)
 
 # Tool modules are imported here so their @mcp.tool() decorators run at
 # server boot. Each module calls mcp.tool(...) on its async functions.
+# The package entrypoint lives in __main__.py to avoid the
+# `python -m trading_sandwich.mcp.server` double-import trap.
 from trading_sandwich.mcp.tools import (  # noqa: F401, E402
     alerts,
     decisions,
     proposals,
     reads,
 )
-
-
-if __name__ == "__main__":
-    import sys
-
-    transport = sys.argv[1] if len(sys.argv) > 1 else "sse"
-    mcp.run(transport=transport)

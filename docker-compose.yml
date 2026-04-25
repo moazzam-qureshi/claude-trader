@@ -117,7 +117,7 @@ services:
       postgres: {condition: service_healthy}
     volumes:
       - ./:/app
-    command: ["python", "-m", "trading_sandwich.mcp.server", "sse"]
+    command: ["python", "-m", "trading_sandwich.mcp", "streamable-http"]
     expose:
       - "8765"
 
