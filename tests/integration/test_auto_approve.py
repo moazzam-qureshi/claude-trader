@@ -23,9 +23,14 @@ def test_auto_approve_flips_eligible_pending(env_for_postgres, monkeypatch):
     monkeypatch.setenv("AUTO_APPROVE_AFTER_SECONDS", "60")
 
     captured = []
+
+    class _StubTask:
+        @staticmethod
+        def delay(pid):
+            captured.append(pid)
+
     monkeypatch.setattr(
-        "trading_sandwich.execution.worker.submit_order",
-        type("StubTask", (), {"delay": classmethod(lambda cls, pid: captured.append(pid))}),
+        "trading_sandwich.execution.worker.submit_order", _StubTask,
     )
 
     async def _flow():
