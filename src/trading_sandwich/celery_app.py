@@ -37,6 +37,7 @@ app = Celery(
         "trading_sandwich.ingestor.rest_tasks",
         "trading_sandwich.ingestor.backfill",
         "trading_sandwich.triage.worker",
+        "trading_sandwich.execution.proposal_sweeper",
     ],
 )
 
@@ -55,6 +56,7 @@ app.conf.update(
         "trading_sandwich.signals.worker.*": {"queue": "signals"},
         "trading_sandwich.outcomes.worker.*": {"queue": "outcomes"},
         "trading_sandwich.triage.worker.*": {"queue": "triage"},
+        "trading_sandwich.execution.proposal_sweeper.*": {"queue": "triage"},
     },
     beat_schedule={
         # Microstructure pollers — one entry per (symbol x task),
@@ -86,6 +88,10 @@ app.conf.update(
         "backfill_scan_gaps": {
             "task": "trading_sandwich.ingestor.backfill.scan_gaps",
             "schedule": 300.0,
+        },
+        "expire_stale_proposals": {
+            "task": "trading_sandwich.execution.proposal_sweeper.sweep",
+            "schedule": 60.0,
         },
     },
     beat_scheduler="redbeat.RedBeatScheduler",
