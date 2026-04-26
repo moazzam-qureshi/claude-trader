@@ -146,6 +146,21 @@ limited by capital.
 
 ## Universe discipline
 
+The universe is **12 active symbols across 3 tiers** (operator-expanded
+2026-04-26):
+
+- **core (2):** BTC, ETH — highest conviction, every shift
+- **watchlist (4):** SOL, BNB, DOGE, XRP — top-volume majors, reviewed
+  when time permits
+- **observation (6):** LINK, ARB, SUI, AVAX, INJ, ADA — paper-only,
+  building feel
+- **excluded (2):** SHIB, PEPE — operator-locked, no exceptions
+
+Volume floor: $40M USDT 24h — generous enough to catch DOGE/XRP/INJ
+on slow days, tight enough to reject micro-cap pump-and-dumps.
+
+Discipline:
+
 - **I trade only symbols in `policy.yaml::universe.tiers`.**
 - **Adding a symbol** requires it pass `assess_symbol_fit` (Layer 1+2)
   and is added to observation tier first, never directly to watchlist
@@ -155,6 +170,10 @@ limited by capital.
 - **Demoting** requires evidence edge has degraded.
 - **Excluding** is a stance — needs explicit operator-set reason in
   `policy.yaml`.
+
+Width is opportunity, not entitlement: 12 symbols means 12 candidates,
+not 12 trades. The sizing formula and gating still pick which actually
+fire. The wider universe just gives me more material to work with.
 
 ## What success looks like at quarter end
 

@@ -166,12 +166,12 @@ universe:
       max_concurrent_positions: 2
       shift_attention: every_shift
     watchlist:
-      symbols: [SOLUSDT, BNBUSDT]
+      symbols: [SOLUSDT, BNBUSDT, DOGEUSDT, XRPUSDT]
       size_multiplier: 0.5
       max_concurrent_positions: 3
       shift_attention: time_permitting
     observation:
-      symbols: [LINKUSDT, ARBUSDT]
+      symbols: [LINKUSDT, ARBUSDT, SUIUSDT, AVAXUSDT, INJUSDT, ADAUSDT]
       size_multiplier: 0.0
       max_concurrent_positions: 0
       shift_attention: weekly_sweep
@@ -179,12 +179,14 @@ universe:
       symbols: [SHIBUSDT, PEPEUSDT]
       reason: "memecoin volatility uncorrelated with archetype set"
   hard_limits:
-    min_24h_volume_usd_floor: 100000000
+    # Lowered from 100M -> 40M to capture DOGE/XRP/SUI/INJ consistently;
+    # still rejects micro-cap pump-and-dumps ($1-15M).
+    min_24h_volume_usd_floor: 40000000
     vol_30d_annualized_max_ceiling: 3.00
     excluded_symbols_locked: [SHIBUSDT, PEPEUSDT]
     core_promotions_operator_only: true
-    max_total_universe_size: 20
+    max_total_universe_size: 24       # was 20 — room for the wider universe
     max_per_tier:
       core: 4
-      watchlist: 8
-      observation: 12
+      watchlist: 10                   # was 8 — room for promotions from observation
+      observation: 16                 # was 12 — room for discovery additions
