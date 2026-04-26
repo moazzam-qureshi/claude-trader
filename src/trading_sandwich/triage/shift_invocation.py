@@ -46,8 +46,12 @@ def build_claude_argv(
         "--effort", effort,
         "--strict-mcp-config",
         "--mcp-config", str(mcp_config_path),
-        "--allowedTools", ",".join(allowed_tools),
     ]
+    # Repeated --allowedTools flags (not comma-separated). The Claude CLI
+    # accepts both shapes inconsistently across versions; repeated flag is
+    # the version that always works.
+    for tool in allowed_tools:
+        argv.extend(["--allowedTools", tool])
     for pf in prompt_files:
         argv.extend(["--append-system-prompt-file", str(pf)])
     argv.extend(["-p", "heartbeat shift"])
