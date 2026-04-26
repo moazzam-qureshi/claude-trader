@@ -68,7 +68,11 @@ default_stop_atr_multiple: 1.5
 default_rr_minimum: 1.5
 
 # Claude invocation cap (unused Phase 1; Phase 2 enforces)
-claude_daily_triage_cap: 30  # daily ceiling — Claude Max budget
+claude_daily_triage_cap: 500  # legacy cap from signal-triage era; heartbeat trader
+                              # doesn't spawn Claude per signal, so this is just
+                              # a label on the gating_outcome. Set high so signals
+                              # don't get marked daily_cap_hit and falsely look gated
+                              # when the heartbeat trader queries get_recent_signals.
 
 # Global rate limit: minimum minutes between any two Claude triages
 # regardless of archetype/symbol/timeframe. 30min = up to 48/day if

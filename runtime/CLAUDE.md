@@ -333,6 +333,20 @@ Read this once; the patterns become muscle memory.
 - **`get_recent_signals(symbol?, timeframe?, since="24h", limit=50)`** —
   query what the rule pipeline has flagged recently. Symbols and
   timeframes are filters; recency is `1h`/`24h`/`7d` style.
+
+  **IMPORTANT — `gating_outcome` is metadata, NOT a stop sign.** Each
+  signal carries a `gating_outcome` field with values like `claude_triaged`,
+  `daily_cap_hit`, `cooldown_suppressed`, `dedup_suppressed`, `rate_limited`,
+  `below_threshold`. These are labels from the legacy signal-triage era —
+  they describe what the rule pipeline *did* with the signal, not whether
+  the signal is real or actionable. **The signal itself is a real
+  archetype fire either way.** When you see a `range_rejection long
+  BTCUSDT` with `gating_outcome: daily_cap_hit`, that means *the
+  archetype really fired on BTCUSDT* — you can and should evaluate it
+  for a trade like any other signal. Do not treat the gating outcome
+  as "this isn't worth trading." Treat it as "the legacy gate said this
+  wouldn't have triaged Claude in the old system." It has no bearing on
+  the heartbeat trader's decision.
 - **`get_top_movers(window="24h", limit=10)`** — top USDT pairs by abs
   24h % change from Binance public API. Discovery, not signal.
 - **`assess_symbol_fit(symbol)`** — runs Layer 1 + Layer 2 hard-limit
