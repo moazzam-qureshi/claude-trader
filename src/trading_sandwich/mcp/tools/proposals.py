@@ -54,7 +54,6 @@ async def propose_trade(
     symbol: str,
     side: Literal["long", "short"],
     order_type: Literal["market", "limit", "stop"],
-    size_usd: Decimal,
     limit_price: Decimal | None,
     stop_loss: StopLossSpec,
     take_profit: TakeProfitSpec | None,
@@ -67,9 +66,64 @@ async def propose_trade(
     worst_case_loss_usd: Decimal,
     similar_signals_count: int,
     similar_signals_win_rate: Decimal | None = None,
+    size_usd: Decimal | None = None,
+    regime_multiplier: float = 1.0,
     time_in_force: Literal["GTC", "IOC", "FOK"] = "GTC",
 ) -> UUID:
-    """Propose a trade. Persisted only if all cross-checks pass."""
+    """Propose a trade. Persisted only if all cross-checks pass.
+
+    Sizing: if `size_usd` is None (recommended for normal proposals),
+    the size is computed dynamically by `compute_position_size()` using
+    your evidence (win_rate, RR, sample, regime_multiplier). The formula
+    lives in policy.yaml::position_sizing. See GOALS.md for the table
+    of how setup quality maps to size.
+
+    Pass `size_usd` explicitly only for special cases (closing a partial
+    position to a fixed amount, etc.) and document the override in
+    `risk` field.
+
+    `regime_multiplier`: 1.0 if the archetype + regime are aligned per
+    CLAUDE.md §3 cell map (default), 0.5 for marginal pairings (e.g.,
+    divergence in mid-trend), 0.0 for anti-regime (will refuse).
+    """
+    # Dynamic sizing if Claude didn't override.
+    if size_usd is None:
+        from trading_sandwich._policy import (
+            PositionSizingError, compute_position_size,
+        )
+        # Fetch live equity from execution adapter.
+        from trading_sandwich.execution.worker import _adapter
+        adapter, _mode = _adapter()
+        try:
+            state = await adapter.get_account_state()
+            equity_usd = state.equity_usd
+        except Exception as exc:
+            raise ValueError(f"could not read equity to size trade: {exc}") from exc
+
+        # Need win_rate to compute. Default to 0.50 (anchor) if missing.
+        wr = float(similar_signals_win_rate) if similar_signals_win_rate is not None else 0.50
+
+        try:
+            size_usd, sizing_dbg = compute_position_size(
+                equity_usd=equity_usd,
+                win_rate=wr,
+                expected_rr=float(expected_rr),
+                sample_size=similar_signals_count,
+                regime_multiplier=regime_multiplier,
+                is_first_trade=False,  # TODO: detect from positions table
+            )
+        except PositionSizingError as exc:
+            # Sub-floor — refuse the trade rather than persist a tiny one.
+            raise ValueError(f"sizing refused: {exc.reason}") from exc
+
+        # Recompute worst_case_loss_usd from new size + stop, since Claude
+        # provided it for an unknown size.
+        if limit_price is not None:
+            stop_v = stop_loss.value
+            worst_case_loss_usd = (
+                size_usd * abs(limit_price - stop_v) / limit_price
+            ).quantize(Decimal("0.01"))
+
     rr_min = _policy.get_default_rr_minimum()
     if expected_rr < rr_min:
         raise ValueError(f"expected_rr {expected_rr} < default_rr_minimum {rr_min}")

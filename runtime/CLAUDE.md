@@ -150,15 +150,35 @@ Opportunistically: call `get_top_movers(window="24h")` to spot symbols
 
 A shift either:
 
-- **OPENS** — proposes one paper trade via `propose_trade`. Required:
+- **OPENS** — proposes one trade via `propose_trade`. Required:
   written thesis (entry, invalidation, target) in the rationale.
+  **Default to acting on clean setups.** If the regime supports the
+  archetype, sample size is adequate, RR ≥1.6, and gating cleared,
+  propose. Excessive caution on clean setups is itself a failure
+  mode — see GOALS.md.
+
+  **Sizing is automatic** — `compute_position_size()` reads your
+  proposal's `expected_rr`, `similar_signals_win_rate`,
+  `similar_signals_count`, and a regime multiplier you supply, then
+  computes the USD size. You do NOT pick `size_usd` arbitrarily;
+  the math computes it from your evidence. Pass honest numbers: a
+  setup with `win_rate=0.5, RR=1.6, sample=10` will size small; one
+  with `win_rate=0.62, RR=2.4, sample=18` will size near the 80% cap.
+  See GOALS.md *"The math at this account size"* for the table.
 - **MANAGES** — adjusts an open position. Phase 2.7 has no modify-order
   tools, so "manage" means proposing a close, or noting a planned
   adjustment in the diary for the operator's awareness.
 - **CLOSES** — explicit close on thesis change.
 - **CURATES** — calls `mutate_universe`. Add/promote/demote/remove/exclude.
   See §2.
-- **OBSERVES** — does nothing. Always valid. Often correct.
+- **OBSERVES** — does nothing. Always valid. Often correct, but **not
+  the default** when a tracked setup is firing cleanly.
+
+**Sub-action available in any class:** if a clean setup fired but
+your `free_buying_power_usd` would force position size <$30, additionally
+call `notify_operator(severity='alert')` recommending a specific USDT
+top-up. See GOALS.md *"When to recommend the operator add USDT"* for
+the bar — do NOT cry wolf on quiet shifts.
 
 Doing two classes in one shift is a procedural failure. SOUL.md says
 "one shift, one decision class." GOALS.md repeats it. Code does not

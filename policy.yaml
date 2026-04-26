@@ -50,15 +50,18 @@ outcome_horizons:
   - "3d"
   - "7d"
 
-# Execution rails — sized for $160 testnet account (operator-set 2026-04-26)
-max_order_usd: 50              # halved by first_trade_size_multiplier on first trade
+# Execution rails — dynamic position sizing (operator-set 2026-04-26)
+# max_order_usd is now a HARD ceiling fallback. Real sizing is computed
+# per-proposal by compute_position_size() using position_sizing.* below.
+max_order_usd: 200              # absolute hard cap; formula caps at max_position_pct first
 max_open_positions_per_symbol: 1
-max_open_positions_total: 3
+max_open_positions_total: 2     # was 3 — with 50%+ sizing, 2 max coexist
 max_orders_per_day: 20
-max_daily_realized_loss_usd: 20  # ~12% of $160 account; aligns with GOALS.md drawdown cap
-max_leverage: 1                # halal spot only — no margin, no borrowing (riba)
-max_account_drawdown_pct: 10
-max_correlated_usd: 100         # ~60% of account exposed across correlated positions max
+max_daily_realized_loss_usd: 35  # ~21% of $167; matches new dynamic sizing risk profile
+max_leverage: 1                  # halal spot only — no margin, no borrowing (riba)
+max_account_drawdown_pct: 25     # was 10 — operator chose risk profile that allows 1-2
+                                 # max-sized conviction losses without tripping kill-switch
+max_correlated_usd: 200          # ~120% of $167 — single conviction trade can exhaust this
 min_stop_distance_atr: 0.3
 max_stop_distance_atr: 5.0
 default_stop_atr_multiple: 1.5
@@ -83,6 +86,49 @@ proposal_ttl_minutes: 15
 
 # Live-mode safeguards
 first_trade_size_multiplier: 0.5
+
+# ----------------------------------------------------------------------
+# Dynamic position sizing (operator-set 2026-04-26).
+#
+# At trade time, compute_position_size() computes:
+#
+#   raw_pct = base_pct
+#             * min(win_rate / win_rate_anchor, win_rate_cap_mult)
+#             * min(rr / rr_anchor, rr_cap_mult)
+#             * min(sample_size / sample_anchor, sample_cap_mult)
+#             * regime_multiplier
+#
+#   final_pct = clamp(raw_pct, min_position_pct, max_position_pct)
+#
+#   position_usd = equity_usd * final_pct
+#                  * (first_trade_size_multiplier if no prior trades else 1.0)
+#
+# If raw_pct < min_position_pct, the trade is REFUSED (size below floor =
+# not worth fees). Returned as size=0; caller proposes 'alert' instead of
+# 'paper_trade'.
+#
+# The formula rewards: high win-rate, high RR, large sample, regime
+# alignment. It penalizes (or refuses) the opposite. Claude does NOT
+# self-rate conviction — sizing is derived from objective evidence.
+position_sizing:
+  base_pct: 0.40                  # baseline % of equity per trade
+  min_position_pct: 0.10          # below this -> refuse, propose alert instead
+  max_position_pct: 0.80          # absolute ceiling for any trade
+  min_position_usd: 11            # Binance min notional safety
+  min_equity_to_size_usd: 30      # if equity < 30, refuse (catches auth bugs)
+  # Conviction inputs:
+  win_rate_anchor: 0.45           # win_rate / 0.45 -> multiplier (1.0 at anchor)
+  win_rate_cap_mult: 1.4          # max multiplier from win_rate alone
+  rr_anchor: 1.5                  # expected_rr / 1.5 -> multiplier
+  rr_cap_mult: 1.4
+  sample_anchor: 15               # similar_signals_count / 15 -> multiplier
+  sample_cap_mult: 1.2
+  # Regime gate (regime_multiplier applied last):
+  #   1.0 = archetype + regime supportive (per CLAUDE.md §3 cell map)
+  #   0.5 = marginal pairing (e.g., divergence in mid-trend)
+  #   0.0 = anti-regime (always refuse)
+  # Determined by Claude's read but informed by archetype/regime mapping.
+  default_regime_multiplier: 1.0
 
 # Reconciliation tolerances
 reconciliation_block_tolerance:
