@@ -76,7 +76,7 @@ min_minutes_between_triages: 30
 
 # Phase 2 execution posture
 trading_enabled: true
-execution_mode: paper               # paper | live — TEMPORARILY paper while halal-spot conversion ships (Spec A.5)
+execution_mode: live                # halal spot live (mainnet, ~$167 USDT) — Spec A.5 shipped 2026-04-26
 
 # Proposal lifecycle
 proposal_ttl_minutes: 15
