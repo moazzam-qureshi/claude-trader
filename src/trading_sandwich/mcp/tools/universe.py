@@ -72,6 +72,28 @@ def _load_hard_limits() -> dict:
     return raw["universe"]["hard_limits"]
 
 
+@mcp.tool()
+async def get_universe() -> dict:
+    """Return the current tiered universe from policy.yaml.
+
+    Use this at the start of every shift to see what symbols you are
+    mandated to trade. Each tier carries: symbols, size_multiplier,
+    max_concurrent_positions, shift_attention. Excluded symbols are
+    listed for awareness but cannot be traded.
+    """
+    raw = yaml.safe_load(POLICY_PATH.read_text())
+    universe = raw["universe"]
+    return {
+        "tiers": universe["tiers"],
+        "hard_limits": universe["hard_limits"],
+        "active_symbols": [
+            sym
+            for tier in ("core", "watchlist", "observation")
+            for sym in universe["tiers"].get(tier, {}).get("symbols", [])
+        ],
+    }
+
+
 async def _fetch_metrics(symbol: str) -> dict:
     """Stubbed in v1: returns zeros so untested symbols cleanly fail. Real
     impl in Spec B pulls from Binance + tradingview MCPs."""

@@ -78,6 +78,17 @@ date, not "today").
 
 ### 1.3 Check (always)
 
+- **`get_universe`** — your mandate. The tiered list of symbols you may
+  trade. Call this at the start of every shift. The list lives in
+  `policy.yaml`; the tool returns the live state. Do NOT assume "no
+  universe defined" — if `get_universe` returns tiers with symbols, those
+  are your tradeable instruments.
+- **`get_pipeline_health`** — confirms the rule pipeline is alive
+  (raw_candles + features being written). If `pipeline_alive: true` but
+  `signals_24h: 0`, that means the rules are running but no archetype
+  pattern has fired in 24h — that's "quiet markets" and a valid OBSERVE
+  outcome. If `pipeline_alive: false`, the data layer is down and you
+  should diary-note it but still write STATE and exit cleanly.
 - **`get_open_positions`** — DB facts. Compare to `open_positions` in
   STATE frontmatter. If they disagree, that's a `state_drift` and goes in
   the diary entry. The DB wins; rewrite STATE accordingly.
@@ -258,11 +269,15 @@ Read this once; the patterns become muscle memory.
 
 - **`get_open_positions()`** — current open positions from DB. Use to
   reconcile STATE every shift.
+- **`get_universe()`** — your mandate. Returns tiered symbol list +
+  hard limits. Always call at shift start to know what you may trade.
+- **`get_pipeline_health()`** — recent row counts (candles, features,
+  signals, outcomes, shifts). Confirms the data layer is alive.
 - **`get_recent_signals(symbol?, timeframe?, since="24h", limit=50)`** —
   query what the rule pipeline has flagged recently. Symbols and
   timeframes are filters; recency is `1h`/`24h`/`7d` style.
-- **`get_top_movers(window="24h", limit=10)`** — spot symbols outside
-  the universe that are moving. Discovery, not signal.
+- **`get_top_movers(window="24h", limit=10)`** — top USDT pairs by abs
+  24h % change from Binance public API. Discovery, not signal.
 - **`assess_symbol_fit(symbol)`** — runs Layer 1 + Layer 2 hard-limit
   checks against a candidate. Required before any `mutate_universe(add)`.
 - **`mutate_universe(event_type, symbol, to_tier?, rationale, reversion_criterion?)`** —
