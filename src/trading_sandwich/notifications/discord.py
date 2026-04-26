@@ -182,6 +182,114 @@ def render_position_closed_card(
     return {"embeds": [{"description": "\n".join(parts)}]}
 
 
+def render_proposal_expired_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    size_usd: float,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    parts = [
+        f"⏰ Proposal expired — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}** ${size_usd:.2f}",
+        f"TTL hit at {expires_at.strftime('%H:%M:%S UTC')} without operator action.",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_proposal_approved_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    size_usd: float,
+    auto: bool,
+) -> dict[str, Any]:
+    by = "auto-approved" if auto else "operator-approved"
+    parts = [
+        f"👍 Proposal {by} — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}** ${size_usd:.2f}",
+        "Routing to execution-worker.",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_risk_event_card(
+    *,
+    occurred_at: datetime,
+    kind: str,
+    severity: str,
+    context: dict | str,
+    action_taken: str | None,
+) -> dict[str, Any]:
+    icon = "⚠️" if severity == "warning" else ("🚨" if severity == "critical" else "ℹ️")
+    ctx_str = str(context)[:300]
+    parts = [
+        f"{icon} Risk event ({severity}) — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Kind: `{kind}`",
+        f"Action: {action_taken or '—'}",
+        "",
+        f"Context: {ctx_str}",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_daily_summary_card(
+    *,
+    occurred_at: datetime,
+    shifts: int,
+    proposals: int,
+    orders_filled: int,
+    orders_rejected: int,
+    universe_changes: int,
+    open_positions: int,
+    realized_pnl_usd: float,
+    equity_usd: float,
+) -> dict[str, Any]:
+    pnl_color = "🟢" if realized_pnl_usd > 0 else ("🔻" if realized_pnl_usd < 0 else "⚪")
+    parts = [
+        f"📅 Daily summary — {occurred_at.strftime('%Y-%m-%d UTC')}",
+        f"Shifts: **{shifts}**  ·  Proposals: **{proposals}**",
+        f"Orders: **{orders_filled} filled** / {orders_rejected} rejected",
+        f"Universe changes: {universe_changes}",
+        f"Open positions: {open_positions}",
+        "",
+        f"{pnl_color} Realized PnL today: **${realized_pnl_usd:+.2f}**  ·  Equity: ${equity_usd:.2f}",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_heartbeat_error_card(
+    *,
+    occurred_at: datetime,
+    exit_reason: str,
+    duration_seconds: int | None,
+    stderr_excerpt: str,
+) -> dict[str, Any]:
+    parts = [
+        f"⚠️ Heartbeat shift failed — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Exit: `{exit_reason}`  ·  Duration: {duration_seconds or '?'}s",
+        "",
+        f"stderr: ```{stderr_excerpt[:400]}```",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_state_drift_card(
+    *,
+    occurred_at: datetime,
+    state_says: int,
+    db_says: int,
+) -> dict[str, Any]:
+    parts = [
+        f"⚠️ STATE drift detected — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"STATE.md says open_positions={state_says}, DB says {db_says}.",
+        "Trader will reconcile by trusting DB on the next shift.",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
 def render_kill_switch_card(
     *,
     occurred_at: datetime,

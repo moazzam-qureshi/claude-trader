@@ -44,10 +44,10 @@ async def auto_approve_pending() -> int:
     factory = get_session_factory()
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=seconds)
-    approved_ids: list = []
+    approved_proposals: list = []
     async with factory() as session:
         rows = (await session.execute(
-            select(TradeProposal.proposal_id)
+            select(TradeProposal)
             .where(
                 TradeProposal.status == "pending",
                 TradeProposal.proposed_at <= cutoff,
@@ -56,34 +56,68 @@ async def auto_approve_pending() -> int:
         )).scalars().all()
         if not rows:
             return 0
+        approved_proposals = [
+            {"id": r.proposal_id, "symbol": r.symbol, "side": r.side,
+             "size_usd": float(r.size_usd)}
+            for r in rows
+        ]
         await session.execute(
             update(TradeProposal)
-            .where(TradeProposal.proposal_id.in_(rows))
+            .where(TradeProposal.proposal_id.in_([r.proposal_id for r in rows]))
             .values(status="approved", approved_at=now, approved_by="auto-approve")
         )
         await session.commit()
-        approved_ids = list(rows)
+
+    # Discord: announce each approval (Phase 2.7)
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_proposal_approved_card,
+    )
+    for p in approved_proposals:
+        await post_card_safe(render_proposal_approved_card(
+            occurred_at=now, symbol=p["symbol"], side=p["side"],
+            size_usd=p["size_usd"], auto=True,
+        ))
 
     # Enqueue submit_order for each newly-approved proposal.
     from trading_sandwich.execution.worker import submit_order
-    for pid in approved_ids:
-        submit_order.delay(str(pid))
-    return len(approved_ids)
+    for p in approved_proposals:
+        submit_order.delay(str(p["id"]))
+    return len(approved_proposals)
 
 
 async def expire_stale_proposals() -> int:
     factory = get_session_factory()
     now = datetime.now(timezone.utc)
     async with factory() as session:
-        stmt = (
-            update(TradeProposal)
+        # Fetch first so we can announce, then update.
+        to_expire = (await session.execute(
+            select(TradeProposal)
             .where(TradeProposal.status == "pending", TradeProposal.expires_at < now)
+        )).scalars().all()
+        expired_meta = [
+            {"id": r.proposal_id, "symbol": r.symbol, "side": r.side,
+             "size_usd": float(r.size_usd), "expires_at": r.expires_at}
+            for r in to_expire
+        ]
+        if not expired_meta:
+            return 0
+        await session.execute(
+            update(TradeProposal)
+            .where(TradeProposal.proposal_id.in_([r.proposal_id for r in to_expire]))
             .values(status="expired", rejected_at=now)
-            .returning(TradeProposal.proposal_id)
         )
-        rows = (await session.execute(stmt)).scalars().all()
         await session.commit()
-    return len(rows)
+
+    # Discord: announce each expiry (Phase 2.7)
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_proposal_expired_card,
+    )
+    for p in expired_meta:
+        await post_card_safe(render_proposal_expired_card(
+            occurred_at=now, symbol=p["symbol"], side=p["side"],
+            size_usd=p["size_usd"], expires_at=p["expires_at"],
+        ))
+    return len(expired_meta)
 
 
 async def _sweep_async() -> int:

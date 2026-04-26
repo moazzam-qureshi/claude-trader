@@ -251,6 +251,20 @@ async def heartbeat_tick() -> None:
         ))
         await session.commit()
 
+    # Discord: announce heartbeat shift errors (Phase 2.7). Successful
+    # shifts stay silent — too noisy.
+    if exit_reason in ("error", "timeout"):
+        from trading_sandwich.notifications.discord import (
+            post_card_safe, render_heartbeat_error_card,
+        )
+        stderr = (result.stderr or "")[:400]
+        await post_card_safe(render_heartbeat_error_card(
+            occurred_at=datetime.now(timezone.utc),
+            exit_reason=exit_reason,
+            duration_seconds=result.duration_seconds,
+            stderr_excerpt=stderr,
+        ))
+
 
 # ---------------------------------------------------------------------------
 # Celery task wrappers — registered in celery_app.py beat_schedule.
@@ -273,6 +287,92 @@ def discord_retry_sweep_celery() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Daily summary — fires once per UTC day, posts a one-card recap
+# ---------------------------------------------------------------------------
+
+async def post_daily_summary() -> None:
+    from datetime import timedelta as _td
+    from sqlalchemy import func
+    from trading_sandwich.db.models_phase2 import (
+        Order as _Order, Position as _Position, TradeProposal as _TradeProposal,
+    )
+    from trading_sandwich.db.models_heartbeat import (
+        UniverseEvent as _UniverseEvent,
+    )
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_daily_summary_card,
+    )
+
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    factory = get_session_factory()
+    async with factory() as session:
+        shifts = (await session.execute(
+            select(func.count(HeartbeatShift.id)).where(
+                HeartbeatShift.spawned.is_(True),
+                HeartbeatShift.started_at >= day_start,
+            )
+        )).scalar_one()
+        proposals = (await session.execute(
+            select(func.count(_TradeProposal.proposal_id)).where(
+                _TradeProposal.proposed_at >= day_start,
+            )
+        )).scalar_one()
+        orders_filled = (await session.execute(
+            select(func.count(_Order.order_id)).where(
+                _Order.filled_at >= day_start,
+                _Order.status == "filled",
+            )
+        )).scalar_one()
+        orders_rejected = (await session.execute(
+            select(func.count(_Order.order_id)).where(
+                _Order.submitted_at >= day_start,
+                _Order.status.in_(("rejected", "failed")),
+            )
+        )).scalar_one()
+        universe_changes = (await session.execute(
+            select(func.count(_UniverseEvent.id)).where(
+                _UniverseEvent.occurred_at >= day_start,
+                _UniverseEvent.event_type != "hard_limit_blocked",
+            )
+        )).scalar_one()
+        open_positions_count = (await session.execute(
+            select(func.count()).select_from(_Position).where(
+                _Position.closed_at.is_(None),
+            )
+        )).scalar_one()
+
+    # Equity from the live adapter (best-effort).
+    equity_usd = 0.0
+    realized_pnl_today = 0.0
+    try:
+        from trading_sandwich.execution.worker import _adapter
+        adapter, _mode = _adapter()
+        state = await adapter.get_account_state()
+        equity_usd = float(state.equity_usd)
+        realized_pnl_today = float(state.realized_pnl_today_usd)
+    except Exception:
+        pass
+
+    await post_card_safe(render_daily_summary_card(
+        occurred_at=now,
+        shifts=shifts,
+        proposals=proposals,
+        orders_filled=orders_filled,
+        orders_rejected=orders_rejected,
+        universe_changes=universe_changes,
+        open_positions=open_positions_count,
+        realized_pnl_usd=realized_pnl_today,
+        equity_usd=equity_usd,
+    ))
+
+
+@shared_task(name="trading_sandwich.triage.heartbeat.daily_summary_celery")
+def daily_summary_celery() -> None:
+    asyncio.run(post_daily_summary())
+
+
+# ---------------------------------------------------------------------------
 # State-drift detection helper
 # ---------------------------------------------------------------------------
 
@@ -287,8 +387,23 @@ async def detect_state_drift(state_path: Path) -> dict:
 
     fm, _ = read_state(state_path)
     db_positions = await get_open_positions()
+    state_says = fm.open_positions
+    db_says = len(db_positions)
+    drift = state_says != db_says
+
+    if drift:
+        # Discord: drift detected (Phase 2.7)
+        from trading_sandwich.notifications.discord import (
+            post_card_safe, render_state_drift_card,
+        )
+        await post_card_safe(render_state_drift_card(
+            occurred_at=datetime.now(timezone.utc),
+            state_says=state_says,
+            db_says=db_says,
+        ))
+
     return {
-        "state_says": fm.open_positions,
-        "db_says": len(db_positions),
-        "drift": fm.open_positions != len(db_positions),
+        "state_says": state_says,
+        "db_says": db_says,
+        "drift": drift,
     }

@@ -250,10 +250,20 @@ async def evaluate_policy(proposal) -> str | None:
 
 async def record_risk_event(proposal_id: UUID, reason: str, severity: str = "block") -> None:
     factory = get_session_factory()
+    now = datetime.now(timezone.utc)
     async with factory() as session:
         session.add(RiskEvent(
             event_id=uuid4(), kind=reason.split(" ")[0], severity=severity,
             context={"proposal_id": str(proposal_id), "reason": reason},
-            action_taken="proposal_failed", at=datetime.now(timezone.utc),
+            action_taken="proposal_failed", at=now,
         ))
         await session.commit()
+    # Discord: announce the rail block (Phase 2.7)
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_risk_event_card,
+    )
+    await post_card_safe(render_risk_event_card(
+        occurred_at=now, kind=reason.split(" ")[0], severity=severity,
+        context={"proposal_id": str(proposal_id), "reason": reason},
+        action_taken="proposal_failed",
+    ))

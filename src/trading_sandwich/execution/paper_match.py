@@ -47,19 +47,36 @@ async def match_async() -> int:
         )
         if not crossed:
             continue
+        now_fill = datetime.now(timezone.utc)
+        fill_price = Decimal(str(o.limit_price))
+        size_base = Decimal(str(o.size_usd)) / fill_price
         async with factory() as session:
             await session.execute(
                 update(Order)
                 .where(Order.order_id == o.order_id)
                 .values(
                     status="filled",
-                    filled_at=datetime.now(timezone.utc),
-                    avg_fill_price=Decimal(str(o.limit_price)),
-                    filled_base=(Decimal(str(o.size_usd)) / Decimal(str(o.limit_price))),
+                    filled_at=now_fill,
+                    avg_fill_price=fill_price,
+                    filled_base=size_base,
                 )
             )
             await session.commit()
         filled += 1
+
+        # Discord: paper fill (Phase 2.7)
+        from trading_sandwich.notifications.discord import (
+            post_card_safe, render_order_filled_card,
+        )
+        await post_card_safe(render_order_filled_card(
+            occurred_at=now_fill,
+            symbol=o.symbol,
+            side=o.side,
+            size_base=float(size_base),
+            fill_price=float(fill_price),
+            notional_usd=float(o.size_usd),
+            fees_usd=None,
+        ))
     return filled
 
 

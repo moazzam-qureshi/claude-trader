@@ -134,6 +134,14 @@ app.conf.update(
             "task": "trading_sandwich.triage.heartbeat.discord_retry_sweep_celery",
             "schedule": 15 * 60.0,
         },
+        # Daily summary card (Phase 2.7): operator-facing recap, fires every
+        # 24h. Scheduled here as a fixed-interval rather than at-midnight
+        # because RedBeat's cron support is limited and an offset within the
+        # day doesn't matter much for a summary card.
+        "discord_daily_summary": {
+            "task": "trading_sandwich.triage.heartbeat.daily_summary_celery",
+            "schedule": 24 * 60 * 60.0,
+        },
     },
     beat_scheduler="redbeat.RedBeatScheduler",
     redbeat_redis_url=settings.celery_broker_url.rsplit("/", 1)[0] + "/2",
