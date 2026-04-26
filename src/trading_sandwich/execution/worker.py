@@ -134,8 +134,49 @@ async def _submit_async(proposal_id: UUID) -> None:
         time_in_force=proposal.time_in_force,
         client_order_id=proposal.proposal_id.hex,
     )
+    # Discord: order submitted (Phase 2.7)
+    from trading_sandwich.notifications.discord import (
+        post_card_safe,
+        render_order_filled_card,
+        render_order_rejected_card,
+        render_order_submitted_card,
+    )
+    now_submit = datetime.now(timezone.utc)
+    await post_card_safe(render_order_submitted_card(
+        occurred_at=now_submit,
+        symbol=request.symbol,
+        side=request.side,
+        size_usd=float(request.size_usd),
+        order_type=request.order_type,
+        limit_price=float(request.limit_price) if request.limit_price else None,
+    ))
+
     receipt = await adapter.submit_order(request)
     await _persist_order(proposal_id, request, receipt, mode, _capture_policy_version())
+
+    # Discord: order outcome
+    now_done = datetime.now(timezone.utc)
+    if receipt.status == "filled":
+        fill_price = float(receipt.avg_fill_price) if receipt.avg_fill_price else 0.0
+        size_base = float(receipt.filled_base) if receipt.filled_base else 0.0
+        notional = fill_price * size_base if fill_price and size_base else float(request.size_usd)
+        await post_card_safe(render_order_filled_card(
+            occurred_at=now_done,
+            symbol=request.symbol,
+            side=request.side,
+            size_base=size_base,
+            fill_price=fill_price,
+            notional_usd=notional,
+            fees_usd=float(receipt.fees_usd) if receipt.fees_usd else None,
+        ))
+    elif receipt.status in ("rejected", "failed"):
+        await post_card_safe(render_order_rejected_card(
+            occurred_at=now_done,
+            symbol=request.symbol,
+            side=request.side,
+            size_usd=float(request.size_usd),
+            reason=receipt.rejection_reason or "unknown",
+        ))
 
 
 @app.task(name="trading_sandwich.execution.worker.submit_order", acks_late=True)

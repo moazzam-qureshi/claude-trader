@@ -181,4 +181,27 @@ async def propose_trade(
         except Exception:
             pass
 
+    # Phase 2.7 — also post to the universe-events channel so heartbeat-trader
+    # operators see proposals in the same feed as universe mutations. Same
+    # webhook URL the heartbeat trader uses for universe notifications.
+    from trading_sandwich.notifications.discord import (
+        post_card_safe,
+        render_proposal_card,
+    )
+    auto_approve_seconds = int(os.environ.get("AUTO_APPROVE_AFTER_SECONDS", "60"))
+    rationale = (opportunity or "")[:400]
+    await post_card_safe(render_proposal_card(
+        occurred_at=now,
+        proposal_id=str(proposal_id),
+        symbol=symbol,
+        side=side,
+        size_usd=float(size_usd),
+        entry=float(limit_price or signal.trigger_price),
+        stop=float(stop_loss.value),
+        take_profit=float(take_profit.value) if take_profit else None,
+        rationale=rationale,
+        expected_rr=float(expected_rr) if expected_rr else None,
+        auto_approve_in_seconds=auto_approve_seconds,
+    ))
+
     return proposal_id

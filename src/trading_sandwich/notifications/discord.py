@@ -72,6 +72,142 @@ def render_hard_limit_blocked_card(
     return {"embeds": [{"description": "\n".join(parts)}]}
 
 
+# ---------------------------------------------------------------------------
+# Trade lifecycle cards. All use the same DISCORD_UNIVERSE_WEBHOOK_URL so
+# the operator gets one channel for every event worth seeing.
+# ---------------------------------------------------------------------------
+
+
+def render_proposal_card(
+    *,
+    occurred_at: datetime,
+    proposal_id: str,
+    symbol: str,
+    side: str,
+    size_usd: float,
+    entry: float,
+    stop: float,
+    take_profit: float | None,
+    rationale: str,
+    expected_rr: float | None,
+    auto_approve_in_seconds: int,
+) -> dict[str, Any]:
+    parts = [
+        f"🟢 Trade proposal — {occurred_at.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"**{side.upper()} {symbol}** at ~${entry:.2f}  ·  size ${size_usd:.2f}",
+        f"Stop: ${stop:.2f}  ·  TP: " + (f"${take_profit:.2f}" if take_profit else "—") +
+        (f"  ·  RR: {expected_rr:.2f}" if expected_rr else ""),
+        "",
+        f"Rationale: {rationale[:400]}",
+        "",
+        f"⏱ Auto-approves in {auto_approve_in_seconds}s. proposal_id: `{proposal_id[:8]}…`",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_order_submitted_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    size_usd: float,
+    order_type: str,
+    limit_price: float | None,
+) -> dict[str, Any]:
+    parts = [
+        f"🔵 Order submitted to Binance — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}** {order_type}  ·  size ${size_usd:.2f}",
+    ]
+    if limit_price:
+        parts.append(f"Limit: ${limit_price:.2f}")
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_order_filled_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    size_base: float,
+    fill_price: float,
+    notional_usd: float,
+    fees_usd: float | None = None,
+) -> dict[str, Any]:
+    fee_line = f"  ·  fees: ${fees_usd:.4f}" if fees_usd is not None else ""
+    parts = [
+        f"✅ Order filled — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}** filled at **${fill_price:.2f}**",
+        f"Size: {size_base:.6f}  ·  notional ${notional_usd:.2f}{fee_line}",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_order_rejected_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    size_usd: float,
+    reason: str,
+) -> dict[str, Any]:
+    parts = [
+        f"❌ Order rejected — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}** ${size_usd:.2f}",
+        "",
+        f"Reason: {reason[:500]}",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_position_closed_card(
+    *,
+    occurred_at: datetime,
+    symbol: str,
+    side: str,
+    entry: float,
+    exit_price: float,
+    realized_pnl_usd: float,
+    pnl_pct: float,
+    reason: str,
+) -> dict[str, Any]:
+    win = realized_pnl_usd > 0
+    icon = "💰" if win else "🔻"
+    parts = [
+        f"{icon} Position closed — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"**{side.upper()} {symbol}**  entry ${entry:.2f} → exit ${exit_price:.2f}",
+        f"PnL: **${realized_pnl_usd:+.2f}** ({pnl_pct:+.2f}%)",
+        "",
+        f"Reason: {reason[:200]}",
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+def render_kill_switch_card(
+    *,
+    occurred_at: datetime,
+    active: bool,
+    reason: str,
+) -> dict[str, Any]:
+    if active:
+        parts = [
+            f"🚨 KILL-SWITCH TRIPPED — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            "",
+            f"Reason: {reason}",
+            "",
+            "All new orders are blocked. Open positions are NOT auto-closed (per policy).",
+            "Resume with: `myapp trading resume --ack-reason \"...\"`",
+        ]
+    else:
+        parts = [
+            f"✅ Kill-switch RESUMED — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Operator ack: {reason}",
+        ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
+# ---------------------------------------------------------------------------
+
+
 async def post_card(card: dict[str, Any]) -> str | None:
     """POST card to Discord webhook. Returns Discord message_id on success,
     None on failure."""
@@ -85,6 +221,18 @@ async def post_card(card: dict[str, Any]) -> str | None:
             return data.get("id")
     except Exception:
         return None
+
+
+async def post_card_safe(card: dict[str, Any]) -> None:
+    """Fire-and-forget Discord post. Never raises. For trade-lifecycle
+    notifications where Discord failure must NEVER block the trade path.
+    """
+    try:
+        if not os.environ.get(WEBHOOK_ENV):
+            return  # webhook not configured — silently skip
+        await post_card(card)
+    except Exception:
+        pass
 
 
 async def retry_unposted_events(max_age_minutes: int = 1440) -> int:

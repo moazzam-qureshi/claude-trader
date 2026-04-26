@@ -42,6 +42,16 @@ async def trip(reason: str) -> None:
     if not reason:
         raise ValueError("reason is required")
     await _update_state(True, reason)
+    # Discord page-the-operator notification (Phase 2.7)
+    from datetime import datetime, timezone
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_kill_switch_card,
+    )
+    await post_card_safe(render_kill_switch_card(
+        occurred_at=datetime.now(timezone.utc),
+        active=True,
+        reason=reason,
+    ))
 
 
 async def resume(ack_reason: str) -> None:
@@ -49,3 +59,12 @@ async def resume(ack_reason: str) -> None:
     if not ack_reason or len(ack_reason) < 4:
         raise ValueError("ack_reason is required (>=4 chars)")
     await _update_state(False, ack_reason)
+    from datetime import datetime, timezone
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_kill_switch_card,
+    )
+    await post_card_safe(render_kill_switch_card(
+        occurred_at=datetime.now(timezone.utc),
+        active=False,
+        reason=ack_reason,
+    ))
