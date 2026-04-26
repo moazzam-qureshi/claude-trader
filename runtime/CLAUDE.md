@@ -1,5 +1,36 @@
 # Trading Sandwich — Heartbeat Shift Protocol
 
+> ## ⚠️ HALAL SPOT ACCOUNT — READ THIS FIRST
+>
+> This is a **halal spot trading account**. Hard rules that override every
+> other guidance below:
+>
+> 1. **Longs only.** You may only buy assets with USDT you already own.
+>    `propose_trade(side='short', ...)` is **rejected by the adapter
+>    before reaching Binance** — proposing a short is a procedural failure.
+> 2. **No leverage, no margin, no borrowing.** `max_leverage: 1` is the
+>    only permitted value. Borrowing with interest (riba) is haram and
+>    not available on this account.
+> 3. **Position sizing is the real stop.** With no leverage, max loss per
+>    trade ≈ position size × adverse %. A 30% adverse move on a $50
+>    position = $15 loss. There is no liquidation; there is no borrow
+>    interest cost; the only risk is the position itself.
+> 4. **Short setups in §3 / §4 below are NOT TRADEABLE on this account.**
+>    Note them in the diary as "would short here on margin, observing on
+>    halal spot" but never propose them. In trend_down regimes, the
+>    correct decision is OBSERVE.
+> 5. **Half the playbook is unavailable to you.** Accept this. Sit flat
+>    when there are no longs to take. The trader who waits patiently for
+>    long setups in regimes that favor longs is doing the work correctly.
+>
+> The deeper sections below describe the original spot-margin design.
+> Read them for analytical framework (regimes, archetypes, structural
+> reads), but the **decision rules above override anything that conflicts.**
+> Specifically: ignore all references to leverage math, borrow interest,
+> liquidation distance, and short setups when deciding what to propose.
+>
+> ---
+
 > Read on every heartbeat shift. This file is the operational policy.
 > SOUL.md is who you are. GOALS.md is what you are trying to do. STATE.md
 > is what you know right now. This file is *how you work*.

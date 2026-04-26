@@ -41,8 +41,10 @@ def _adapter():
         from trading_sandwich.execution.adapters.paper import PaperAdapter
         return PaperAdapter(), "paper"
     if mode == "live":
-        from trading_sandwich.execution.adapters.ccxt_live import CCXTProAdapter
-        return CCXTProAdapter(), "live"
+        # Halal spot only — Spec A.5. CCXTProAdapter (margin) is kept in repo
+        # for audit/historical but is no longer routed.
+        from trading_sandwich.execution.adapters.ccxt_spot import CCXTSpotAdapter
+        return CCXTSpotAdapter(), "live"
     raise ValueError(f"unknown execution_mode {mode!r}")
 
 
