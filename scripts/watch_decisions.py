@@ -35,6 +35,10 @@ from trading_sandwich.db.models import (
     Signal,
     SignalOutcome,
 )
+from trading_sandwich.db.models_heartbeat import (
+    HeartbeatShift,
+    UniverseEvent,
+)
 from trading_sandwich.db.models_phase2 import (
     KillSwitchState,
     Order,
@@ -256,6 +260,46 @@ async def _recent_orders(session, limit: int = 5) -> list[dict]:
     ]
 
 
+async def _recent_heartbeat_shifts(session, limit: int = 6) -> list[dict]:
+    rows = (await session.execute(
+        select(HeartbeatShift)
+        .order_by(HeartbeatShift.started_at.desc())
+        .limit(limit)
+    )).scalars().all()
+    return [
+        {
+            "started_at": r.started_at,
+            "spawned": r.spawned,
+            "exit_reason": r.exit_reason,
+            "actual_interval_min": r.actual_interval_min,
+            "next_check_in_minutes": r.next_check_in_minutes,
+            "duration_seconds": r.duration_seconds,
+            "next_check_reason": r.next_check_reason,
+        }
+        for r in rows
+    ]
+
+
+async def _recent_universe_events(session, limit: int = 6) -> list[dict]:
+    rows = (await session.execute(
+        select(UniverseEvent)
+        .order_by(UniverseEvent.occurred_at.desc())
+        .limit(limit)
+    )).scalars().all()
+    return [
+        {
+            "occurred_at": r.occurred_at,
+            "event_type": r.event_type,
+            "symbol": r.symbol,
+            "from_tier": r.from_tier,
+            "to_tier": r.to_tier,
+            "rationale": r.rationale,
+            "blocked_by": r.blocked_by,
+        }
+        for r in rows
+    ]
+
+
 async def _kill_switch(session) -> dict:
     row = (await session.execute(
         select(KillSwitchState).where(KillSwitchState.id == 1)
@@ -312,8 +356,73 @@ def render_split(title: str, rows: list[tuple[str, int]], color_map: dict | None
     return out
 
 
+def render_heartbeat_shifts(rows: list[dict], width: int) -> list[str]:
+    out = [color("Recent heartbeat shifts (Phase 2.7)", C_BOLD)]
+    if not rows:
+        out.append(color("  (no shifts yet)", C_DIM))
+        return out
+    out.append(color(
+        f"  {'started_at (UTC)':<22} {'spawned':<8} {'exit':<13} "
+        f"{'actual':>7} {'next':>5} {'dur':>5}  reason",
+        C_GRAY,
+    ))
+    out.append(color("  " + "─" * (width - 4), C_DARK))
+    for r in rows:
+        ts = r["started_at"].strftime("%m-%d %H:%M:%S") if r["started_at"] else "—"
+        rel = relative_time(r["started_at"]) if r["started_at"] else ""
+        spawned = "yes" if r["spawned"] else "no"
+        spawn_color = C_GREEN if r["spawned"] else C_DARK
+        exit_reason = (r["exit_reason"] or "—")[:13]
+        actual = r["actual_interval_min"]
+        nci = r["next_check_in_minutes"]
+        dur = r["duration_seconds"]
+        reason = (r["next_check_reason"] or "")[:max(20, width - 70)]
+        out.append(
+            f"  {color(ts, C_CYAN):<22} {color(f'{spawned:<8}', spawn_color)} "
+            f"{exit_reason:<13} "
+            f"{(str(actual) if actual is not None else '—'):>7} "
+            f"{(str(nci) if nci is not None else '—'):>5} "
+            f"{(str(dur) if dur is not None else '—'):>5}  "
+            f"{color(reason, C_GRAY)}"
+        )
+        if rel:
+            out.append(f"  {color('    ' + rel, C_DARK)}")
+    return out
+
+
+def render_universe_events(rows: list[dict], width: int) -> list[str]:
+    out = [color("Recent universe events (heartbeat trader)", C_BOLD)]
+    if not rows:
+        out.append(color("  (no universe mutations yet)", C_DIM))
+        return out
+    out.append(color(
+        f"  {'occurred_at (UTC)':<22} {'event':<22} {'symbol':<10} "
+        f"{'from→to':<22} rationale",
+        C_GRAY,
+    ))
+    out.append(color("  " + "─" * (width - 4), C_DARK))
+    for r in rows:
+        ts = r["occurred_at"].strftime("%m-%d %H:%M:%S") if r["occurred_at"] else "—"
+        event = r["event_type"] or "?"
+        ec = C_GREEN if event in ("add", "promote", "unexclude") else (
+            C_BLUE if event in ("demote", "remove") else (
+                C_GRAY if event == "exclude" else C_MAGENTA  # hard_limit_blocked stands out
+            )
+        )
+        symbol = (r["symbol"] or "?")[:10]
+        transition = f"{r['from_tier'] or '—'}→{r['to_tier'] or '—'}"
+        if r["blocked_by"]:
+            event = f"{event}[{r['blocked_by'][:10]}]"
+        rationale = (r["rationale"] or "")[:max(25, width - 80)]
+        out.append(
+            f"  {color(ts, C_CYAN):<22} {color(f'{event:<22}', ec)} "
+            f"{symbol:<10} {transition:<22} {color(rationale, C_GRAY)}"
+        )
+    return out
+
+
 def render_decisions_table(rows: list[dict], width: int) -> list[str]:
-    out = [color("Recent Claude decisions", C_BOLD)]
+    out = [color("Recent Claude decisions (legacy signal-triage; frozen)", C_BOLD)]
     if not rows:
         out.append(color("  (none yet)", C_DIM))
         return out
@@ -421,6 +530,8 @@ async def snapshot() -> str:
         recent = await _recent_decisions(session)
         proposals = await _open_proposals(session)
         orders = await _recent_orders(session)
+        shifts = await _recent_heartbeat_shifts(session)
+        univ_events = await _recent_universe_events(session)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     lines: list[str] = []
@@ -439,6 +550,12 @@ async def snapshot() -> str:
     lines.append("")
     lines.extend(render_archetype_split(archetypes))
     lines.append("")
+    # Phase 2.7 — heartbeat trader sections (the live trader)
+    lines.extend(render_heartbeat_shifts(shifts, width))
+    lines.append("")
+    lines.extend(render_universe_events(univ_events, width))
+    lines.append("")
+    # Legacy signal-triage section (kept for historical visibility; frozen)
     lines.extend(render_decisions_table(recent, width))
     lines.append("")
     lines.extend(render_proposals_table(proposals))
