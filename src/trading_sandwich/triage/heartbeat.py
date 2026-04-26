@@ -252,8 +252,7 @@ async def heartbeat_tick() -> None:
         ))
         await session.commit()
 
-    # Discord: announce heartbeat shift errors (Phase 2.7). Successful
-    # shifts stay silent — too noisy.
+    # Discord: announce heartbeat shift errors (Phase 2.7).
     if exit_reason in ("error", "timeout"):
         from trading_sandwich.notifications.discord import (
             post_card_safe, render_heartbeat_error_card,
@@ -264,6 +263,45 @@ async def heartbeat_tick() -> None:
             exit_reason=exit_reason,
             duration_seconds=result.duration_seconds,
             stderr_excerpt=stderr,
+        ))
+    elif exit_reason == "completed":
+        # Auto-shift-summary card. Posted by the heartbeat task itself, NOT
+        # by Claude's discretionary notify_operator. The operator gets one
+        # card per spawned shift so 'what is the trader doing right now'
+        # is always visible without SSH.
+        from trading_sandwich.notifications.discord import (
+            post_card_safe, render_shift_summary_card,
+        )
+        # Extract STATE.md body excerpt (already loaded above in state_snapshot
+        # if STATE existed; re-read fm for fields).
+        excerpt = ""
+        try:
+            from trading_sandwich.triage.state_io import read_state
+            fm2, body2 = read_state(state_path)
+            excerpt = body2.strip()
+            regime_tag = fm2.regime
+            open_pos = fm2.open_positions
+            open_th = fm2.open_theses
+        except Exception:
+            regime_tag = "unknown"
+            open_pos = 0
+            open_th = 0
+        # Compute shift_count from DB count (newly inserted row included).
+        async with factory() as session:
+            from sqlalchemy import func
+            shift_count = (await session.execute(
+                select(func.count(HeartbeatShift.id))
+                .where(HeartbeatShift.spawned.is_(True))
+            )).scalar_one()
+        await post_card_safe(render_shift_summary_card(
+            occurred_at=datetime.now(timezone.utc),
+            shift_count=int(shift_count),
+            regime=regime_tag,
+            open_positions=int(open_pos),
+            open_theses=int(open_th),
+            next_check_in_minutes=next_check_in,
+            duration_seconds=result.duration_seconds,
+            state_body_excerpt=excerpt,
         ))
 
 

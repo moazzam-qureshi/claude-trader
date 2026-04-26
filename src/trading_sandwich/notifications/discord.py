@@ -276,6 +276,35 @@ def render_heartbeat_error_card(
     return {"embeds": [{"description": "\n".join(parts)}]}
 
 
+def render_shift_summary_card(
+    *,
+    occurred_at: datetime,
+    shift_count: int,
+    regime: str,
+    open_positions: int,
+    open_theses: int,
+    next_check_in_minutes: int | None,
+    duration_seconds: int | None,
+    state_body_excerpt: str,
+) -> dict[str, Any]:
+    """Auto-posted card after every spawned shift completes. Not the trader's
+    discretionary `notify_operator` channel — this is a system-level 'what
+    happened in the latest shift' digest, fired by the heartbeat task itself.
+    """
+    next_label = (
+        f"next ~{next_check_in_minutes}m" if next_check_in_minutes else "next ?m"
+    )
+    dur_label = f"{duration_seconds}s" if duration_seconds else "?s"
+    parts = [
+        f"⚙️ Shift #{shift_count} — {occurred_at.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"regime: **{regime}**  ·  positions: {open_positions}  ·  "
+        f"theses: {open_theses}  ·  ran in {dur_label}  ·  {next_label}",
+        "",
+        state_body_excerpt[:1200],
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
 def render_trader_note_card(
     *,
     occurred_at: datetime,

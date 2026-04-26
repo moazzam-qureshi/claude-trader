@@ -157,6 +157,23 @@ A shift either:
   propose. Excessive caution on clean setups is itself a failure
   mode — see GOALS.md.
 
+  **Evaluate ALL recently-fired archetypes, not just your pre-stated
+  thesis trigger.** When you ORIENT, you wrote down what you were
+  watching. That is a *primary* trigger, not the *only* trigger. Each
+  shift, also call `get_recent_signals()` and scan ALL setups that fired
+  in the last hour across the entire universe. A clean
+  `liquidity_sweep_swing long` on SOL fired with sample=14, RR=2.1, in
+  a supportive regime is a tradeable setup even if your shift opened
+  watching for `trend_pullback long BTC`. Plans inform attention; clean
+  setups command action. Do not let "I was watching X" blind you to
+  "Y just fired clean."
+
+  **Evaluate the wider universe, not just core.** Watchlist symbols
+  (SOL, BNB, DOGE, XRP) trade at 0.5x size — clean setups there are
+  still real trades. Observation symbols (LINK, ARB, SUI, AVAX, INJ,
+  ADA) are paper-only at 0.0x size — but evaluate them anyway and
+  diary what you'd have done; that's how they earn promotion.
+
   **Sizing is automatic** — `compute_position_size()` reads your
   proposal's `expected_rr`, `similar_signals_win_rate`,
   `similar_signals_count`, and a regime multiplier you supply, then
