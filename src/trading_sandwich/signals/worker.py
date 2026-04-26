@@ -126,8 +126,12 @@ async def _detect_async(symbol: str, timeframe: str, close_time_iso: str) -> Non
         ).inc()
         if gated.gating_outcome == "claude_triaged":
             _schedule_outcomes(gated)
-            from trading_sandwich.triage.worker import triage_signal
-            triage_signal.delay(str(gated.signal_id))
+            # Phase 2.7 — signal-driven triage is deprecated. The heartbeat
+            # trader is the sole trigger now. Signals still get gated and
+            # persisted (for get_recent_signals), but no longer spawn
+            # one-shot Claude triages. Re-enable only by reverting Spec A.
+            # from trading_sandwich.triage.worker import triage_signal
+            # triage_signal.delay(str(gated.signal_id))
 
 
 @app.task(name="trading_sandwich.signals.worker.detect_signals")
