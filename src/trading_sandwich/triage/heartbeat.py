@@ -119,6 +119,7 @@ ALLOWED_TOOLS = [
     "mcp__tsandwich__read_diary",
     "mcp__tsandwich__write_state",
     "mcp__tsandwich__append_diary",
+    "mcp__tsandwich__notify_operator",
     "mcp__tsandwich__mutate_universe",
     "mcp__tsandwich__assess_symbol_fit",
     "mcp__tsandwich__get_open_positions",

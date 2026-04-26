@@ -317,6 +317,14 @@ Read this once; the patterns become muscle memory.
   ISO date string `"2026-04-25"`. Returns empty content if file missing.
 - **`write_state(body, frontmatter)`** — replace STATE.md.
 - **`append_diary(entry)`** — append to today's diary file.
+- **`notify_operator(title, body, severity)`** — post a Discord card to
+  the operator. **Use deliberately, not sparingly.** The operator wants
+  to be informed about anything material — opportunities forming, risks
+  you're watching, insights, structural concerns, milestones, requests
+  for manual action. See SOUL.md *"When to ping the operator directly"*
+  for the full guidance. Severity options: `info` 💬, `watching` 👀,
+  `thinking` 🧠, `concern` ⚠️, `alert` 🚨, `success` 🎉. Default `info`.
+  This is a primary communication channel — not a last resort.
 - **`get_signal`, `get_market_snapshot`, `find_similar_signals`,
   `get_archetype_stats`, `save_decision`, `send_alert`, `propose_trade`** —
   carried over from the prior signal-triage era. Frozen for new writes

@@ -63,3 +63,50 @@ async def append_diary(entry: str) -> dict:
     path = diary_path_for(_diary_dir(), _today())
     _append_diary_file(path, entry)
     return {"appended": True, "file": str(path)}
+
+
+@mcp.tool()
+async def notify_operator(
+    title: str,
+    body: str,
+    severity: str = "info",
+) -> dict:
+    """Post a Discord card to the operator's universe-events channel.
+
+    Use sparingly. The operator sees every notification you send. Use this
+    when you have something specific the operator should know — a thesis
+    you want surfaced, a structural concern, a setup you'd take if not
+    blocked, a request for a manual decision, or a mistake you noticed in
+    a prior shift. **Do not use for routine OBSERVE shifts** — that's what
+    the diary is for.
+
+    Args:
+        title: short headline, will appear bold (max 100 chars)
+        body:  the message itself (max 1500 chars; longer is truncated)
+        severity: one of:
+          - 'info'      💬 — general note, default
+          - 'watching'  👀 — flagging a setup forming, no action needed yet
+          - 'thinking'  🧠 — sharing a thesis or hypothesis
+          - 'concern'   ⚠️ — something looks wrong, operator should look
+          - 'alert'     🚨 — operator action recommended now
+          - 'success'   🎉 — milestone or good outcome
+
+    Returns: {posted: bool}. Discord failure does NOT raise.
+    """
+    from datetime import datetime, timezone
+    from trading_sandwich.notifications.discord import (
+        post_card_safe, render_trader_note_card,
+    )
+    valid = {"info", "watching", "thinking", "concern", "alert", "success"}
+    if severity not in valid:
+        severity = "info"
+    title = (title or "")[:100].strip() or "(no title)"
+    body = (body or "")[:1500].strip() or "(empty)"
+
+    await post_card_safe(render_trader_note_card(
+        occurred_at=datetime.now(timezone.utc),
+        severity=severity,
+        title=title,
+        body=body,
+    ))
+    return {"posted": True}

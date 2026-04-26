@@ -276,6 +276,30 @@ def render_heartbeat_error_card(
     return {"embeds": [{"description": "\n".join(parts)}]}
 
 
+def render_trader_note_card(
+    *,
+    occurred_at: datetime,
+    severity: str,
+    title: str,
+    body: str,
+) -> dict[str, Any]:
+    """Trader-authored Discord note. Severity drives the icon."""
+    icon = {
+        "info":      "💬",
+        "watching":  "👀",
+        "thinking":  "🧠",
+        "concern":   "⚠️",
+        "alert":     "🚨",
+        "success":   "🎉",
+    }.get(severity, "💬")
+    parts = [
+        f"{icon} **{title}** — {occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        "",
+        body[:1500],
+    ]
+    return {"embeds": [{"description": "\n".join(parts)}]}
+
+
 def render_state_drift_card(
     *,
     occurred_at: datetime,
