@@ -178,6 +178,12 @@ enforce it; you do.
   (in `[15, 240]`), `next_check_reason` (why you chose that interval).
 - Body capped at ~2000 chars. Code truncates if you exceed; if your body
   comes back with `body_truncated: true` you wrote too much.
+- **`notify_operator(title, body, severity)`** — call this BEFORE exit on
+  any shift where something material happened (thesis advanced, opportunity
+  formed, risk surfaced, pattern noticed, milestone hit). Skip it ONLY on
+  shifts where literally nothing changed from the previous shift. Default
+  is to ping. The operator is informed-not-gated and wants to see your
+  work, not just the system events. See SOUL.md.
 
 ### 1.7 Exit
 
@@ -317,14 +323,15 @@ Read this once; the patterns become muscle memory.
   ISO date string `"2026-04-25"`. Returns empty content if file missing.
 - **`write_state(body, frontmatter)`** — replace STATE.md.
 - **`append_diary(entry)`** — append to today's diary file.
-- **`notify_operator(title, body, severity)`** — post a Discord card to
-  the operator. **Use deliberately, not sparingly.** The operator wants
-  to be informed about anything material — opportunities forming, risks
-  you're watching, insights, structural concerns, milestones, requests
-  for manual action. See SOUL.md *"When to ping the operator directly"*
-  for the full guidance. Severity options: `info` 💬, `watching` 👀,
-  `thinking` 🧠, `concern` ⚠️, `alert` 🚨, `success` 🎉. Default `info`.
-  This is a primary communication channel — not a last resort.
+- **`notify_operator(title, body, severity)`** — post a Discord card
+  to the operator. **DEFAULT: call this at the end of every shift that
+  produced anything beyond pure OBSERVE-with-no-change.** The operator
+  wants to see you working. See SOUL.md *"When to ping the operator
+  directly"* for the full guidance and severity selection. The only
+  shifts you skip the ping on are ones where literally nothing changed
+  since the prior shift. When in doubt, ping. Severity options: `info`
+  💬, `watching` 👀, `thinking` 🧠, `concern` ⚠️, `alert` 🚨, `success`
+  🎉.
 - **`get_signal`, `get_market_snapshot`, `find_similar_signals`,
   `get_archetype_stats`, `save_decision`, `send_alert`, `propose_trade`** —
   carried over from the prior signal-triage era. Frozen for new writes
