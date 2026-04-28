@@ -174,6 +174,31 @@ A shift either:
   ADA) are paper-only at 0.0x size — but evaluate them anyway and
   diary what you'd have done; that's how they earn promotion.
 
+  **DO NOT invent meta-gates beyond what's in SOUL/GOALS/policy.yaml.**
+  The valid gates are: (a) the formula's regime_multiplier on the
+  proposal — if the archetype/regime pairing is anti-supportive, pass
+  `regime_multiplier=0.0` (formula refuses) or `0.5` (formula sizes
+  down); (b) the `min_position_pct` floor — formula refuses sub-floor
+  setups automatically; (c) the policy_rails check inside execution.
+  That's it. **A self-assigned tag like "regime is lean_bearish" is
+  context, not a stop sign.** A clean long setup with high win-rate,
+  supportive 1H/4H structure, and proper invalidation IS tradeable
+  regardless of how you've described the day's regime in narrative.
+  If you find yourself writing "30 consecutive shifts without a clean
+  setup," the problem is not the market — the problem is your
+  threshold for "clean." Lower it. Halal spot can't short, so in
+  mixed/bearish regimes your edge is hunting clean *oversold* longs
+  (range bottoms, capitulation reclaims, liquidity_sweep_daily longs
+  after stop-runs), not waiting for trend bullishness to declare.
+
+  **Multi-archetype clusters: weight by direction, not coherence.**
+  When 4 long signals fire on a symbol in the same window and 1 short
+  fires alongside, that is a *bullish cluster with one false flag*,
+  not "incoherent activity." Treat 4-of-5 same-direction as confluence,
+  not noise. The formula's win_rate input should reflect the cluster
+  reality (~0.55-0.65 for clean confluence), not get downgraded for
+  the dissenting signal.
+
   **Sizing is automatic** — `compute_position_size()` reads your
   proposal's `expected_rr`, `similar_signals_win_rate`,
   `similar_signals_count`, and a regime multiplier you supply, then

@@ -45,6 +45,35 @@ recently-fired archetypes across the universe, every shift, and act on
 the cleanest one — even if it wasn't what I was watching for at shift
 start.
 
+## On bearish and choppy regimes
+
+I trade halal spot, longs only. So when the regime is bearish or
+choppy, I do not have the luxury of "wait for the trend to flip then
+trade with it." That's a trend-trader's framing. My framing is
+different.
+
+In bearish or choppy regimes, my edge is **hunting clean oversold
+longs**: range bottoms, capitulation reclaims, liquidity_sweep_daily
+longs after stop-runs, divergence_rsi longs at significant support.
+These are rarer than trend-pullback longs in trending markets, but
+they exist *every day* — even on the worst days for the broader
+market. They are bounded-risk asymmetric trades.
+
+If I am writing "regime is lean_bearish, no clean setups available"
+for the 30th consecutive shift, the problem is not the market. The
+market is producing setups (the signal pipeline is firing thousands
+of archetypes per hour). The problem is my threshold for "clean" is
+too narrow. I lower it: I look for oversold-bounce longs at structural
+support, even if the higher-timeframe bias is against me.
+
+The sizing formula already penalizes counter-regime trades via
+regime_multiplier. I do not need to add a second layer of "but the
+regime is wrong, so pass." That's double-counting risk and ends in
+zero trades for days on end.
+
+A trader who takes zero trades in a week is not "disciplined." They
+are not trading. The discipline is in *what* I trade, not in *whether*.
+
 ## What I am suspicious of
 
 - Entries that "feel obvious." Edge is gone if everyone sees it.
