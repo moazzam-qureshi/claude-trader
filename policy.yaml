@@ -116,7 +116,10 @@ first_trade_size_multiplier: 0.5
 # self-rate conviction — sizing is derived from objective evidence.
 position_sizing:
   base_pct: 0.40                  # baseline % of equity per trade
-  min_position_pct: 0.10          # below this -> refuse, propose alert instead
+  min_position_pct: 0.05          # was 0.10 — lowered so sparse-sample setups
+                                  # still size at floor (~$8 on $167) instead
+                                  # of being refused. Trader is chart-first now;
+                                  # DB sparseness is normal on a new account.
   max_position_pct: 0.80          # absolute ceiling for any trade
   min_position_usd: 11            # Binance min notional safety
   min_equity_to_size_usd: 30      # if equity < 30, refuse (catches auth bugs)
@@ -125,13 +128,19 @@ position_sizing:
   win_rate_cap_mult: 1.4          # max multiplier from win_rate alone
   rr_anchor: 1.5                  # expected_rr / 1.5 -> multiplier
   rr_cap_mult: 1.4
-  sample_anchor: 15               # similar_signals_count / 15 -> multiplier
+  sample_anchor: 3                # was 15 — lowered to match new-account reality.
+                                  # sample=3 hits anchor (full base size).
+                                  # sample=1 still sizes (just smaller).
   sample_cap_mult: 1.2
+  sample_mult_floor: 0.5          # NEW — sample multiplier never drops below this.
+                                  # Means sample=0 still gets ~50% of base size
+                                  # (chart-clean setups can be exploratory at floor).
+                                  # Without this, sample=0 -> mult=0 -> refused
+                                  # always, which kills new-account trading.
   # Regime gate (regime_multiplier applied last):
-  #   1.0 = archetype + regime supportive (per CLAUDE.md §3 cell map)
-  #   0.5 = marginal pairing (e.g., divergence in mid-trend)
+  #   1.0 = archetype + regime supportive
+  #   0.5 = marginal pairing
   #   0.0 = anti-regime (always refuse)
-  # Determined by Claude's read but informed by archetype/regime mapping.
   default_regime_multiplier: 1.0
 
 # Reconciliation tolerances

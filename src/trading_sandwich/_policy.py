@@ -135,6 +135,7 @@ def get_position_sizing_config() -> dict:
             "rr_cap_mult": 1.4,
             "sample_anchor": 15,
             "sample_cap_mult": 1.2,
+            "sample_mult_floor": 0.5,
             "default_regime_multiplier": 1.0,
         }
     return dict(raw)
@@ -176,7 +177,15 @@ def compute_position_size(
 
     wr_mult = min(win_rate / cfg["win_rate_anchor"], cfg["win_rate_cap_mult"])
     rr_mult = min(expected_rr / cfg["rr_anchor"], cfg["rr_cap_mult"])
-    s_mult = min(sample_size / cfg["sample_anchor"], cfg["sample_cap_mult"])
+    # Sample multiplier has a FLOOR (default 0.5) so sparse samples still
+    # produce nonzero sizing. Otherwise sample=0 -> mult=0 -> always refused,
+    # which makes new-account trading impossible. Chart-clean setups deserve
+    # at least floor-sized exploratory trades to build the evidence base.
+    s_mult_floor = cfg.get("sample_mult_floor", 0.5)
+    s_mult = max(
+        min(sample_size / cfg["sample_anchor"], cfg["sample_cap_mult"]),
+        s_mult_floor,
+    )
 
     raw_pct = (
         cfg["base_pct"]
