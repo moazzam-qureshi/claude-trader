@@ -1,6 +1,22 @@
-"""Central `policy.yaml` accessor. Consumers should use these helpers rather than
-reading the YAML directly; this gives us one place to change caching or schema
-validation when the policy grows.
+"""Central `policy.yaml` accessor.
+
+DEPRECATION NOTE (Phase 3 amendment, 2026-05-10):
+  Phase 2.7 callers continue to read through these sync helpers — they
+  are unchanged and supported. NEW Phase 3 code (Strategy Engine, regime
+  classifier, performance tracker, all Wave 1+ strategies) should read
+  through `trading_sandwich.settings.repo.get(key)` instead. That async
+  path consults the DB-backed `policy_settings` first, falling back to
+  policy.yaml, so it picks up runtime tunes from Discord/MCP. This
+  module's helpers don't see DB overrides.
+
+  is_trading_enabled and auto_flatten_on_kill stay on the file path
+  here per amendment §11; the settings repo also reads them from the
+  Tier-2 file seed when no DB override exists, so behavior is identical.
+  Migration of those callers is not required and explicitly cautioned
+  against (don't break the running triage worker).
+
+  See docs/superpowers/specs/2026-05-10-db-backed-config-amendment.md
+  \xc2\xa711 for the migration plan.
 """
 from __future__ import annotations
 

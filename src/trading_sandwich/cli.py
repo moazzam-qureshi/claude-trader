@@ -19,6 +19,10 @@ app = typer.Typer(help="Trading Sandwich CLI")
 from trading_sandwich.cli_heartbeat import heartbeat_app  # noqa: E402
 app.add_typer(heartbeat_app, name="heartbeat")
 
+# Phase 3 amendment AM-7 — three-tier settings subcommands.
+from trading_sandwich.cli_settings import settings_app  # noqa: E402
+app.add_typer(settings_app, name="settings")
+
 _PHASE_0_TABLES = [
     "raw_candles",
     "features",
