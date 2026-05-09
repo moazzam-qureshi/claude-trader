@@ -397,3 +397,24 @@ def test_policy_changes_rejected_row_requires_reason(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
         asyncio.run(_run(url))
+
+
+# --- 0017 policy_snapshot column on decision tables --------------------------
+
+
+@pytest.mark.integration
+def test_claude_decisions_has_policy_snapshot(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "claude_decisions", ["policy_snapshot"])
+
+
+@pytest.mark.integration
+def test_portfolio_decisions_has_policy_snapshot(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "portfolio_decisions", ["policy_snapshot"])
