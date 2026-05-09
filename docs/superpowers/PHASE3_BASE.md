@@ -17,7 +17,7 @@
 
 | Item | Value |
 |---|---|
-| Live capital | ~$90 USDT (down from ~$167 — `policy.yaml` risk caps need re-derivation; flagged as follow-up to Task 1.5) |
+| Live capital | ~$183 USDT (started session at ~$90, operator topped up +$88 mid-session 2026-05-10). Existing `policy.yaml` risk caps (calibrated for $167) remain ~appropriate; no re-derivation needed. |
 | Universe | Spec §6.1 verbatim — accept as-is |
 | Discord channel | Reuse `DISCORD_UNIVERSE_WEBHOOK_URL` for all Phase 3 notifications |
 | CFGI feed (Wave 2) | Pre-approved (alternative.me free tier) |

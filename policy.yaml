@@ -87,7 +87,7 @@ trading_enabled: false              # Phase 3 build gate (2026-05-10): discretio
                                     # positions ride; rail_trading_enabled blocks all new
                                     # proposals with reason "trading_disabled". Re-enable per
                                     # spec cutover plan after Wave 1 strategies prove out.
-execution_mode: live                # halal spot live (mainnet, ~$90 USDT 2026-05-10) — Spec A.5 shipped 2026-04-26
+execution_mode: live                # halal spot live (mainnet, ~$183 USDT 2026-05-10 after operator topup) — Spec A.5 shipped 2026-04-26
 
 # Proposal lifecycle
 proposal_ttl_minutes: 15
