@@ -194,3 +194,107 @@ def test_strategy_orders_fk_to_strategies(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
         _check_fk(url, "strategy_orders", "strategy_id", "strategies", "id")
+
+
+# --- 0014 regime_classifications + regime_pivots -----------------------------
+
+
+_REGIME_CLASSIFICATIONS_COLS = [
+    "id",
+    "symbol",
+    "timeframe",
+    "regime",
+    "signals",
+    "classified_at",
+]
+
+
+_REGIME_PIVOTS_COLS = [
+    "id",
+    "symbol",
+    "from_regime",
+    "to_regime",
+    "triggered_by",
+    "triggered_at",
+    "actions_taken",
+    "prompt_version",
+]
+
+
+@pytest.mark.integration
+def test_regime_classifications_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "regime_classifications")
+
+
+@pytest.mark.integration
+def test_regime_classifications_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "regime_classifications", _REGIME_CLASSIFICATIONS_COLS)
+
+
+@pytest.mark.integration
+def test_regime_pivots_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "regime_pivots")
+
+
+@pytest.mark.integration
+def test_regime_pivots_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "regime_pivots", _REGIME_PIVOTS_COLS)
+
+
+# --- 0015 portfolio_decisions ------------------------------------------------
+
+
+_PORTFOLIO_DECISIONS_COLS = [
+    "id",
+    "decision_type",
+    "target_strategy_id",
+    "target_symbol",
+    "rationale",
+    "market_context",
+    "decided_by",
+    "decided_at",
+    "prompt_version",
+]
+
+
+@pytest.mark.integration
+def test_portfolio_decisions_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "portfolio_decisions")
+
+
+@pytest.mark.integration
+def test_portfolio_decisions_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "portfolio_decisions", _PORTFOLIO_DECISIONS_COLS)
+
+
+@pytest.mark.integration
+def test_portfolio_decisions_fk_to_strategies(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_fk(url, "portfolio_decisions", "target_strategy_id", "strategies", "id")
