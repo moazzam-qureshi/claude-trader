@@ -804,4 +804,27 @@ These need operator confirmation before plan execution begins:
 
 ---
 
+## Amendments (recorded during execution)
+
+### A1 — strategy_orders.order_id type (2026-05-10, Task 1.2)
+
+Spec §5.1 declared:
+
+```sql
+CREATE TABLE strategy_orders (
+    ...
+    order_id BIGINT NOT NULL REFERENCES orders(id),
+    ...
+);
+```
+
+The existing `orders` table (migration 0010) actually uses
+`orders.order_id UUID PRIMARY KEY`. There is no `orders.id` column.
+Migration 0013 implements the FK as
+`order_id UUID NOT NULL REFERENCES orders(order_id)` to match reality.
+Semantic intent is preserved — it links a strategy-placed order to the
+canonical orders row. No code outside Phase 3 affected.
+
+---
+
 *End of design spec. Plan: `docs/superpowers/plans/2026-05-09-phase-3-strategy-pivot.md`*
