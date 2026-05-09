@@ -298,3 +298,102 @@ def test_portfolio_decisions_fk_to_strategies(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
         _check_fk(url, "portfolio_decisions", "target_strategy_id", "strategies", "id")
+
+
+# --- 0016 policy_settings + policy_changes -----------------------------------
+
+
+_POLICY_SETTINGS_COLS = [
+    "key",
+    "value",
+    "value_type",
+    "description",
+    "updated_at",
+    "updated_by",
+]
+
+
+_POLICY_CHANGES_COLS = [
+    "id",
+    "key",
+    "old_value",
+    "new_value",
+    "rationale",
+    "changed_by",
+    "authority",
+    "applied",
+    "rejection_reason",
+    "changed_at",
+    "prompt_version",
+]
+
+
+@pytest.mark.integration
+def test_policy_settings_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "policy_settings")
+
+
+@pytest.mark.integration
+def test_policy_settings_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "policy_settings", _POLICY_SETTINGS_COLS)
+
+
+@pytest.mark.integration
+def test_policy_changes_table_exists(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_table_exists(url, "policy_changes")
+
+
+@pytest.mark.integration
+def test_policy_changes_has_required_columns(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "policy_changes", _POLICY_CHANGES_COLS)
+
+
+@pytest.mark.integration
+def test_policy_changes_rejected_row_requires_reason(env_for_postgres):
+    """ck_policy_changes_rejection_has_reason must reject a row with applied=false
+    and rejection_reason NULL."""
+    from sqlalchemy.exc import IntegrityError
+
+    async def _run(async_url: str) -> None:
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    "INSERT INTO policy_changes "
+                    "(key, new_value, rationale, changed_by, authority, applied) "
+                    "VALUES ('test.k', '1'::jsonb, 'r', 'system', 'seed', true)"
+                ))
+            try:
+                async with engine.begin() as conn2:
+                    await conn2.execute(text(
+                        "INSERT INTO policy_changes "
+                        "(key, new_value, rationale, changed_by, authority, applied) "
+                        "VALUES ('test.k', '1'::jsonb, 'r', 'system', 'seed', false)"
+                    ))
+                raise AssertionError("expected check constraint violation")
+            except IntegrityError:
+                pass  # expected
+        finally:
+            await engine.dispose()
+
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        asyncio.run(_run(url))
