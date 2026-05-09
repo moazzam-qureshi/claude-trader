@@ -49,31 +49,63 @@ each decision row's new `policy_snapshot JSONB` column**, replacing the implicit
 - **Migration files (`migrations/versions/*.py`) stay git-tracked.** Schema is code.
 - **Spec/plan documents stay git-tracked.** Decisions are docs.
 
-## 4. Inviolable values — file-only, never DB-tunable
+## 4. Three-tier mutability model
 
-The following keys MUST remain in `policy.yaml` (or a new `policy.safety.yaml`)
-and MUST NOT have rows in `policy_settings`. Reading these values goes through a
-separate `_safety.py` module that has no DB code path:
+Operator clarification 2026-05-10 (after the original §4 was written): there are
+three classes of keys with different mutability rules.
+
+### 4.1 Tier 1 — Hard inviolable (halal/religious)
+
+NEVER mutable through any path. No DB row. No Discord override. No MCP tool.
+Reading goes through `_halal.py` (file-only, no DB code path):
 
 ```
-max_leverage                 # halal: must equal 1
-longs_only                   # halal: must equal True
-universe.tiers.excluded.*    # halal: locked excluded symbols
+max_leverage                              # must equal 1
+longs_only                                # must equal True
+universe.tiers.excluded.*                 # locked excluded symbols
 universe.hard_limits.excluded_symbols_locked
-trading_enabled              # operator-only kill switch
-auto_flatten_on_kill         # kill-switch behavior
-max_account_drawdown_pct     # circuit breaker
-max_daily_realized_loss_usd  # daily loss circuit breaker
 ```
 
-Operator decision 2026-05-10 chose **"Build what I asked for: full self-tune, no
-approval"** for everything else. Claude can mutate any non-inviolable key directly
-via MCP tool. Every mutation logs to `policy_changes` + fires a Discord webhook —
-non-negotiable per the same exchange.
+Any attempt to mutate one of these from any path → `HalalViolationError`,
+`policy_changes` row with `applied=false, rejection_reason='halal_inviolable'`,
+loud Discord alert.
 
-If Claude attempts to mutate an inviolable key, the MCP tool returns
-`error: inviolable_key` and writes an `attempted_change` row to `policy_changes`
-with `applied=false` for forensic visibility.
+### 4.2 Tier 2 — Operator-safety (file seed, operator-only DB override)
+
+File-only seed, but the operator can override at runtime via a dedicated Discord
+slash command that writes directly through the settings repo (no Claude in the
+loop). Claude's `set_setting` MCP tool returns `error: operator_only_key` for
+these and writes a rejected `policy_changes` row.
+
+```
+max_account_drawdown_pct       # account drawdown circuit breaker
+max_daily_realized_loss_usd    # daily loss circuit breaker
+trading_enabled                # operator kill switch
+auto_flatten_on_kill           # kill-switch behavior
+```
+
+Operator path: `/safety set <key> <value> <rationale>` in Discord. The Discord
+listener calls `settings_repo.set(key, value, rationale, changed_by='operator',
+authority='operator_safety')`. Repo verifies key is in Tier 2 set and authority
+matches; writes `policy_settings` row, writes `policy_changes` audit row, fires
+Discord notification. No Claude invocation.
+
+### 4.3 Tier 3 — Self-tunable
+
+All other keys. Claude and operator can both mutate via the standard `set_setting`
+MCP tool or `/settings set` Discord command. Every mutation logs to
+`policy_changes` + fires Discord notification — non-negotiable per operator
+exchange.
+
+### 4.4 Why the split
+
+Operator decision 2026-05-10 chose "full self-tune, no approval" for Tier 3 and
+accepted the LLM-drift failure mode (§13). But circuit breakers are precisely
+the values whose drift would be catastrophic — Claude raising its own drawdown
+cap defeats the safety net's purpose. So Tier 2 separates "Claude should never
+raise its own ceiling" from "operator needs a fast Discord path when the ceiling
+is wrong" by giving the latter a Discord-direct codepath that bypasses the LLM
+entirely.
 
 ## 5. Schema additions
 
@@ -129,10 +161,15 @@ exactly recreate what Claude was looking at.
 
 ```
 load_setting(key) -> Any
-  if key in INVIOLABLE_KEYS:
-      return _safety.read(key)        # file-only, no DB
+  if key in TIER1_HALAL_KEYS:
+      return _halal.read(key)               # file-only, no DB
+  if key in TIER2_SAFETY_KEYS:
+      return policy_settings_repo.get(key) or _safety_seed.read(key)
   return policy_settings_repo.get(key) or _seed_default(key)
 ```
+
+Tier 2 keys are DB-readable like Tier 3 (so Discord overrides take effect);
+they only differ from Tier 3 on the **write path**. Reading sees the override.
 
 `_seed_default(key)` reads `policy.yaml` and returns the default if the DB row
 is missing — covers the bootstrap case where a new key was added to the seed file
@@ -143,10 +180,15 @@ on first explicit set or next `cli settings reseed`.
 ## 7. Write path
 
 ```
-set_setting(key, new_value, rationale, changed_by) -> SetResult
-  if key in INVIOLABLE_KEYS:
-      log to policy_changes with applied=false, rejection_reason='inviolable_key'
-      raise InviolableKeyError
+set_setting(key, new_value, rationale, changed_by, authority) -> SetResult
+  # authority is one of: 'mcp_default' | 'operator_safety' | 'seed'
+  if key in TIER1_HALAL_KEYS:
+      log to policy_changes with applied=false, rejection_reason='halal_inviolable'
+      raise HalalViolationError
+  if key in TIER2_SAFETY_KEYS and authority != 'operator_safety':
+      # Claude (or anything with default authority) cannot mutate Tier 2.
+      log to policy_changes with applied=false, rejection_reason='operator_only_key'
+      raise OperatorOnlyKeyError
   validate new_value type matches stored value_type
   begin tx
     old = policy_settings.get(key)
@@ -157,6 +199,11 @@ set_setting(key, new_value, rationale, changed_by) -> SetResult
   notify_discord(f"settings change: {key} {old} -> {new_value} (by {changed_by}: {rationale})")
   return SetResult(applied=true, old_value=old)
 ```
+
+The MCP tool always passes `authority='mcp_default'`. Only the Discord listener's
+`/safety` handler passes `authority='operator_safety'`. There is no other way to
+obtain operator_safety authority — the constant is defined inside the listener
+module and not exported.
 
 Discord notification fires on **every** successful change, regardless of
 `changed_by`. This is the operator's only safety net for spotting drift —
@@ -177,13 +224,35 @@ operator-supplied `rationale` (Claude must populate from its own reasoning).
 
 ## 9. Operator surface (Discord)
 
+### 9.1 `/settings ...` — Tier 3 (and read-only for Tier 2)
+
 - `/settings list [prefix]` — show current values
 - `/settings get <key>` — show one value with history
-- `/settings set <key> <value> <rationale>` — operator-driven change
+- `/settings set <key> <value> <rationale>` — Tier 3 only. Calls
+  `set_setting(..., authority='mcp_default', changed_by='operator')`.
+  Returns `error: operator_only_key` if you try this on a Tier 2 key — it
+  redirects you to `/safety set`.
 - `/settings diff <since>` — recent changes since a duration/timestamp
 - `/settings revert <change_id>` — restore old_value from a `policy_changes` row;
-  this is itself a `policy_changes` row with `changed_by='operator'` and
-  `rationale='revert of change #<id>'`
+  authority is inferred from the original change's tier.
+
+### 9.2 `/safety ...` — Tier 2, operator-only
+
+Separate slash command surface, separate Discord listener handler. Calls
+`set_setting(..., authority='operator_safety', changed_by='operator')`.
+
+- `/safety list` — show all Tier 2 keys with current values + file-seed values
+- `/safety set <key> <value> <rationale>` — operator-only Tier 2 mutation
+- `/safety reset <key>` — restore the file-seed value (deletes the DB override row)
+
+The handler verifies the requesting user is the configured operator (Discord
+user ID match). Anyone else gets `error: not_operator` and an audit row in
+`policy_changes` with `applied=false, rejection_reason='not_operator'`.
+
+Tier 2 keys can NEVER be mutated through `/settings set` even by the operator —
+that surface is Tier-3-only. The split is structural, not just a permission
+check, so operator muscle memory ("I'll just use settings set") cannot
+accidentally mutate a circuit breaker.
 
 ## 10. Snapshot generation
 
@@ -261,8 +330,21 @@ Task numbering on the Phase 3 plan resumes at 1.5 after AM-7.
 
 ## 15. Failure modes & tests (must cover)
 
-- Setting an inviolable key from MCP → returns error, leaves rejected
-  `policy_changes` row, no `policy_settings` mutation.
+- Setting a Tier 1 (halal) key from any path → returns
+  `HalalViolationError`, rejected `policy_changes` row with
+  `rejection_reason='halal_inviolable'`, no `policy_settings` mutation,
+  loud Discord alert.
+- Setting a Tier 2 (safety) key via MCP `set_setting` (authority=mcp_default)
+  → returns `OperatorOnlyKeyError`, rejected `policy_changes` row with
+  `rejection_reason='operator_only_key'`, no `policy_settings` mutation.
+- Setting a Tier 2 key via `/safety set` from a non-operator Discord user →
+  returns `NotOperatorError`, rejected `policy_changes` row with
+  `rejection_reason='not_operator'`, no mutation.
+- Setting a Tier 2 key via `/safety set` from the operator → applied,
+  `policy_changes` row with `changed_by='operator'`,
+  `authority='operator_safety'`, Discord notification fires.
+- `/settings set` attempted on a Tier 2 key → returns `operator_only_key`,
+  message instructs user to use `/safety set`.
 - Type mismatch (writing string to int key) → reject with type error,
   rejected `policy_changes` row.
 - Concurrent writes to same key → last writer wins; both `policy_changes` rows
@@ -271,8 +353,9 @@ Task numbering on the Phase 3 plan resumes at 1.5 after AM-7.
   the in-flight decision (read at start, snapshot at start, no re-reads).
 - Reseed of a key not present in policy.yaml → returns `error: no_default`.
 - `policy.yaml` deleted → bootstrap fails loudly, doctor red.
-- DB unreachable → `load_setting` falls back to `policy.yaml` default (graceful
-  degradation; logs a warning).
+- DB unreachable → `load_setting` falls back to `policy.yaml` default for Tier
+  3, file-seed for Tier 2, halal file path for Tier 1 (graceful degradation;
+  logs a warning).
 
 ---
 
