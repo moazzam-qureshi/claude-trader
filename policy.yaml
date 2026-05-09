@@ -59,6 +59,7 @@ max_open_positions_total: 2     # was 3 — with 50%+ sizing, 2 max coexist
 max_orders_per_day: 20
 max_daily_realized_loss_usd: 35  # ~21% of $167; matches new dynamic sizing risk profile
 max_leverage: 1                  # halal spot only — no margin, no borrowing (riba)
+longs_only: true                 # halal spot only — no shorts (sale of unowned). Tier 1 inviolable.
 max_account_drawdown_pct: 25     # was 10 — operator chose risk profile that allows 1-2
                                  # max-sized conviction losses without tripping kill-switch
 max_correlated_usd: 200          # ~120% of $167 — single conviction trade can exhaust this
