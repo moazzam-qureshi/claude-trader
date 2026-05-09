@@ -284,7 +284,17 @@ These repeat across every instance. Make them defaults.
 
 **Every decision leaves a trace.** Event log table, always. Non-negotiable.
 
-**Version prompts via git.** No DB-mirrored prompt table. `git rev-parse HEAD` in every event row.
+**Version prompts via git.** Agent prompts (`runtime/CLAUDE.md`, persona files, decision rubrics) live in git. `git rev-parse HEAD` in every event row.
+
+> **Note (amendment 2026-05-10):** This rule originally extended to all policy
+> values too — "no DB-mirrored prompt table." For the trading-sandwich instance
+> only, runtime-tunable numeric/structural config has been moved to a
+> `policy_settings` DB table to support Claude self-tuning of strategy thresholds.
+> Audit reproducibility is preserved by snapshotting full settings into each
+> decision row's `policy_snapshot` JSONB column. Halal/safety values stay
+> file-only. See `docs/superpowers/specs/2026-05-10-db-backed-config-amendment.md`.
+> Other instances of MCP-Sandwich pattern should default to the original git-only
+> rule unless they have an equally specific need.
 
 **Tools are thin, CLAUDE.md is thick.** Business logic lives in policy (prompts), not in tool code. Tools should be replaceable in minutes without changing behavior.
 

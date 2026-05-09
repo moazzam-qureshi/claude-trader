@@ -88,8 +88,20 @@ spec, not an in-session pivot.
 - **`pandas-ta` + `TA-Lib`** for indicators. Do not hand-implement RSI/MACD/ATR.
 - **Raw data is kept forever.** Never delete, never aggregate-and-drop.
 - **Every decision leaves a trace** in an event log table.
-- **Every prompt/policy change is a git commit.** `git rev-parse HEAD` is
-  captured in the `prompt_version` column of `claude_decisions`.
+- **Every agent-prompt change is a git commit.** `git rev-parse HEAD` is
+  captured in the `prompt_version` column of `claude_decisions` and
+  `portfolio_decisions`. (Policy-value changes follow a different path —
+  see next bullet.)
+- **Policy values live in DB (`policy_settings` table), not policy.yaml,
+  for Phase 3 onward.** `policy.yaml` becomes a seed file applied once on
+  first boot. Every settings mutation is logged to `policy_changes` and
+  fires a Discord notification. Halal and safety-rail values
+  (`max_leverage`, `longs_only`, excluded universe, kill switches,
+  drawdown circuit breakers) stay file-only and are NOT DB-tunable. Claude
+  can self-tune any non-inviolable value without operator approval.
+  Decision audit reproducibility is preserved by snapshotting full
+  settings into each decision row's `policy_snapshot` JSONB column. See
+  `docs/superpowers/specs/2026-05-10-db-backed-config-amendment.md`.
 - **Testcontainers** for integration test isolation — not mocks.
 - **Phase 0 scope is fixed:** 2 symbols × 2 timeframes (1m, 5m), 3 indicators
   (EMA/RSI/ATR), 1 archetype (`trend_pullback`), horizons `15m` + `1h`.
