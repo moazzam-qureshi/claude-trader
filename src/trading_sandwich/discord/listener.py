@@ -1,10 +1,17 @@
-"""Discord bot listener. Receives button interactions; flips proposal state."""
+"""Discord bot listener. Receives button interactions; flips proposal state.
+
+Also hosts /settings and /safety slash commands for the three-tier
+policy repo. Handlers live in `discord.settings_handlers`; this module
+is the discord.py glue that registers them and forwards interaction
+context (actor user id, configured operator id).
+"""
 from __future__ import annotations
 
 import os
 from uuid import UUID
 
 import discord
+from discord import app_commands
 
 
 def parse_custom_id(custom_id: str) -> tuple[str, UUID]:
@@ -23,10 +30,89 @@ def validate_operator(interaction) -> bool:
     return str(interaction.user.id) == expected
 
 
+def _operator_id() -> str:
+    return os.environ.get("DISCORD_OPERATOR_ID", "")
+
+
+def _register_settings_commands(tree: app_commands.CommandTree) -> None:
+    """Wire /settings and /safety slash commands onto the command tree."""
+    from trading_sandwich.discord import settings_handlers as h
+
+    settings_grp = app_commands.Group(
+        name="settings",
+        description="Three-tier policy settings (Tier 3 — non-safety)",
+    )
+    safety_grp = app_commands.Group(
+        name="safety",
+        description="Tier 2 operator-safety settings (operator-only)",
+    )
+
+    @settings_grp.command(name="list", description="List policy settings (optionally filtered by prefix)")
+    async def _settings_list(interaction: discord.Interaction, prefix: str = ""):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_settings_list(prefix=prefix)
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @settings_grp.command(name="get", description="Read one policy setting by dotted-path key")
+    async def _settings_get(interaction: discord.Interaction, key: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_settings_get(key=key)
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @settings_grp.command(name="set", description="Mutate a Tier 3 setting (rationale required)")
+    async def _settings_set(interaction: discord.Interaction, key: str, value: str, rationale: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_settings_set(key=key, value_str=value, rationale=rationale)
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @safety_grp.command(name="list", description="List Tier 2 safety keys (current vs file seed)")
+    async def _safety_list(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_safety_list()
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @safety_grp.command(name="set", description="Mutate a Tier 2 key (operator-only)")
+    async def _safety_set(interaction: discord.Interaction, key: str, value: str, rationale: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_safety_set(
+            actor_id=str(interaction.user.id),
+            operator_id=_operator_id(),
+            key=key, value_str=value, rationale=rationale,
+        )
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @safety_grp.command(name="reset", description="Restore the file-seed value for a Tier 2 key (operator-only)")
+    async def _safety_reset(interaction: discord.Interaction, key: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_safety_reset(
+            actor_id=str(interaction.user.id),
+            operator_id=_operator_id(),
+            key=key,
+        )
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    tree.add_command(settings_grp)
+    tree.add_command(safety_grp)
+
+
 class TradingBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+        _register_settings_commands(self.tree)
+
+    async def setup_hook(self) -> None:
+        # Sync slash commands on startup. Global sync can take ~1h to
+        # propagate — for faster dev iteration, set DISCORD_GUILD_ID and
+        # we'll sync to that guild only.
+        guild_id = os.environ.get("DISCORD_GUILD_ID")
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+        else:
+            await self.tree.sync()
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         if interaction.type != discord.InteractionType.component:
