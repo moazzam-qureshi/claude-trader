@@ -22,6 +22,7 @@ from trading_sandwich.mcp.tools import (  # noqa: F401, E402
     market_scan,
     proposals,
     reads,
+    settings,
     state_diary,
     universe,
 )
