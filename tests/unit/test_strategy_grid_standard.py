@@ -97,7 +97,14 @@ def test_first_tick_client_order_ids_pin_level_index():
 
 def test_first_tick_persists_ladder_to_state():
     """After the first tick, ctx.state['levels'] holds one entry per
-    grid level with submitted=True for the buys we emitted."""
+    grid level. Each entry tracks both the buy side (submitted, filled)
+    and the sell side (submitted_sell), so the strategy can emit a sell
+    at rung i+1 when rung i fills.
+
+    Fill *delivery* (flipping filled_buy=True) is the worker/execution
+    rail's responsibility — the strategy only reads it. Until execution
+    plumbing lands, filled_buy is always False and no sells emit.
+    """
     s = StandardGridStrategy()
     ctx = _ctx(low=60_000, high=70_000, levels=5)
 
@@ -117,6 +124,9 @@ def test_first_tick_persists_ladder_to_state():
     assert submitted == [True, True, True, False, False]
     sides = [level["side"] for level in levels]
     assert sides == ["buy", "buy", "buy", "buy", "buy"]
+    # No fills delivered yet → no sells submitted yet.
+    assert all(lv["filled_buy"] is False for lv in levels)
+    assert all(lv["submitted_sell"] is False for lv in levels)
 
 
 # ---------- Idempotency ----------
@@ -235,6 +245,99 @@ def test_emergency_stop_emits_no_intents():
 
 
 # ---------- Expected return for regime ----------
+
+
+# ---------- Sell-against-fill ----------
+
+
+def _seeded_state_after_first_tick(
+    *, low: int = 60_000, high: int = 70_000,
+    levels: int = 5, mid: Decimal = Decimal("65000"),
+    capital_usd: float = 30,
+) -> StrategyContext:
+    """Run the first tick on a fresh ctx so the ladder is populated;
+    return the ctx for tests that need to mutate state to simulate
+    a fill arriving."""
+    s = StandardGridStrategy()
+    ctx = _ctx(low=low, high=high, levels=levels, capital_usd=capital_usd)
+    s.tick(ctx, snapshot={"mid_price": mid})
+    return ctx
+
+
+def test_filled_buy_at_rung_i_emits_sell_at_rung_i_plus_1():
+    """When state says rung 0 (60k) filled_buy=True and rung 1 (62.5k)
+    has not been sold yet, the next tick emits one sell LIMIT at 62.5k
+    with size = the rung's size_usd, role='exit'."""
+    s = StandardGridStrategy()
+    ctx = _seeded_state_after_first_tick()
+
+    # Simulate the worker delivering a fill at rung 0.
+    ctx.state["levels"][0]["filled_buy"] = True
+
+    intents = s.tick(ctx, snapshot={"mid_price": Decimal("65000")})
+
+    assert len(intents) == 1
+    sell = intents[0]
+    assert sell.side == "long"
+    assert sell.order_type == "limit"
+    assert sell.role == "exit"
+    assert sell.limit_price == Decimal("62500")
+    assert sell.size_usd == Decimal("6")  # 30 / 5
+    assert sell.grid_level == 1
+    assert sell.client_order_id == "gridstd-101-L1-exit"
+
+    # State updated: rung 0 marked sold-against.
+    assert ctx.state["levels"][0]["submitted_sell"] is True
+
+
+def test_top_rung_fill_emits_no_sell():
+    """A fill at the top rung has no rung above it. The strategy must
+    not emit an out-of-band sell or crash; it simply records the fill
+    and produces no intent for that rung."""
+    s = StandardGridStrategy()
+    # 3 levels, mid above all → all 3 levels submitted as buys.
+    ctx = _seeded_state_after_first_tick(
+        low=100, high=200, levels=3, mid=Decimal("250"),
+    )
+
+    # Simulate the top rung (index 2 = price 200) filling.
+    ctx.state["levels"][2]["filled_buy"] = True
+
+    intents = s.tick(ctx, snapshot={"mid_price": Decimal("250")})
+
+    assert intents == []
+
+
+def test_multiple_fills_emit_one_sell_per_filled_rung():
+    """Two fills delivered before the next tick → two sells, one for
+    each filled rung, each at the next-higher rung's price."""
+    s = StandardGridStrategy()
+    ctx = _seeded_state_after_first_tick()
+
+    ctx.state["levels"][0]["filled_buy"] = True
+    ctx.state["levels"][1]["filled_buy"] = True
+
+    intents = s.tick(ctx, snapshot={"mid_price": Decimal("65000")})
+
+    assert len(intents) == 2
+    by_level = {it.grid_level: it for it in intents}
+    assert by_level[1].limit_price == Decimal("62500")
+    assert by_level[2].limit_price == Decimal("65000")
+    assert all(it.role == "exit" for it in intents)
+
+
+def test_already_submitted_sell_is_not_re_emitted():
+    """Idempotency: once a fill has produced its sell, the next tick
+    does not re-emit it. submitted_sell is the dedupe key."""
+    s = StandardGridStrategy()
+    ctx = _seeded_state_after_first_tick()
+
+    ctx.state["levels"][0]["filled_buy"] = True
+    first = s.tick(ctx, snapshot={"mid_price": Decimal("65000")})
+    assert len(first) == 1  # sell emitted, state["levels"][0]["submitted_sell"]=True
+
+    second = s.tick(ctx, snapshot={"mid_price": Decimal("65000")})
+    assert second == []
 
 
 def test_expected_return_highest_in_range_volatile():

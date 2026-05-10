@@ -70,15 +70,29 @@ class StandardGridStrategy(Strategy):
         if "mid_price" not in snapshot:
             raise KeyError("grid_standard requires snapshot['mid_price']")
         mid = Decimal(str(snapshot["mid_price"]))
-
-        # Idempotent re-tick: ladder already deployed, nothing to do.
-        if ctx.state.get("levels"):
-            return []
-
         low, high, n_levels = _read_params(ctx.params)
-        prices = _evenly_spaced_levels(low, high, n_levels)
         size_per_level = ctx.capital_allocated_usd / Decimal(n_levels)
 
+        # First tick: deploy the buy ladder.
+        if not ctx.state.get("levels"):
+            return self._deploy_ladder(ctx, low, high, n_levels, mid, size_per_level)
+
+        # Subsequent ticks: any rung whose buy has filled but whose
+        # paired sell hasn't been submitted yet → emit that sell at the
+        # next-higher rung's price. Fill *delivery* (setting filled_buy)
+        # is the worker/execution rail's job; this strategy only reads.
+        return self._emit_sells_for_fills(ctx, size_per_level)
+
+    def _deploy_ladder(
+        self,
+        ctx: StrategyContext,
+        low: Decimal,
+        high: Decimal,
+        n_levels: int,
+        mid: Decimal,
+        size_per_level: Decimal,
+    ) -> list[OrderIntent]:
+        prices = _evenly_spaced_levels(low, high, n_levels)
         intents: list[OrderIntent] = []
         levels_state: list[dict[str, Any]] = []
         for i, price in enumerate(prices):
@@ -98,10 +112,41 @@ class StandardGridStrategy(Strategy):
                 "price": str(price),
                 "side": "buy",
                 "submitted": should_submit,
+                "filled_buy": False,
+                "submitted_sell": False,
                 "client_order_id": coid,
             })
 
         ctx.state["levels"] = levels_state
+        return intents
+
+    def _emit_sells_for_fills(
+        self,
+        ctx: StrategyContext,
+        size_per_level: Decimal,
+    ) -> list[OrderIntent]:
+        levels = ctx.state["levels"]
+        intents: list[OrderIntent] = []
+        for i, lvl in enumerate(levels):
+            if not lvl.get("filled_buy"):
+                continue
+            if lvl.get("submitted_sell"):
+                continue
+            # No rung above the top rung — nothing to sell into.
+            if i + 1 >= len(levels):
+                continue
+            sell_price = Decimal(levels[i + 1]["price"])
+            sell_coid = f"gridstd-{ctx.strategy_id}-L{i + 1}-exit"
+            intents.append(OrderIntent(
+                symbol=ctx.symbol,
+                order_type="limit",
+                size_usd=size_per_level,
+                limit_price=sell_price,
+                client_order_id=sell_coid,
+                role="exit",
+                grid_level=i + 1,
+            ))
+            lvl["submitted_sell"] = True
         return intents
 
     def graceful_shutdown(self, ctx: StrategyContext) -> list[OrderIntent]:
