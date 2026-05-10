@@ -95,12 +95,91 @@ def _register_settings_commands(tree: app_commands.CommandTree) -> None:
     tree.add_command(safety_grp)
 
 
+def _register_strategies_commands(tree: app_commands.CommandTree) -> None:
+    """Wire /strategies, /regime, /equity, /decisions slash commands
+    onto the command tree. Phase 3 plan Task 1.13."""
+    from trading_sandwich.discord import strategies_handlers as h
+
+    strategies_grp = app_commands.Group(
+        name="strategies",
+        description="View + control mechanical strategy fleet",
+    )
+    regime_grp = app_commands.Group(
+        name="regime",
+        description="View + override regime classifications",
+    )
+
+    @strategies_grp.command(name="list", description="List active + paused strategies")
+    async def _strategies_list(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_strategies_list()
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @strategies_grp.command(name="pause", description="Pause an active strategy")
+    async def _strategies_pause(
+        interaction: discord.Interaction, strategy_id: int, reason: str,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_strategies_pause(
+            strategy_id=strategy_id, reason=reason,
+        )
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @strategies_grp.command(name="resume", description="Resume a paused strategy")
+    async def _strategies_resume(
+        interaction: discord.Interaction, strategy_id: int, rationale: str,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_strategies_resume(
+            strategy_id=strategy_id, rationale=rationale,
+        )
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @regime_grp.command(name="override", description="Override a symbol's regime (operator-only)")
+    async def _regime_override(
+        interaction: discord.Interaction,
+        symbol: str, regime: str, duration_hours: int, rationale: str,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_regime_override(
+            actor_id=str(interaction.user.id),
+            operator_id=_operator_id(),
+            symbol=symbol, regime=regime,
+            duration_hours=duration_hours, rationale=rationale,
+        )
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    @tree.command(name="equity", description="Account allocation across strategies")
+    async def _equity(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_equity()
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    decisions_grp = app_commands.Group(
+        name="decisions",
+        description="Recent portfolio decisions",
+    )
+
+    @decisions_grp.command(name="last", description="Recent portfolio decisions")
+    async def _decisions_last(
+        interaction: discord.Interaction, duration: str = "24h",
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        reply = await h.handle_decisions_last(duration=duration)
+        await interaction.followup.send(reply[:1900], ephemeral=True)
+
+    tree.add_command(strategies_grp)
+    tree.add_command(regime_grp)
+    tree.add_command(decisions_grp)
+
+
 class TradingBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         _register_settings_commands(self.tree)
+        _register_strategies_commands(self.tree)
 
     async def setup_hook(self) -> None:
         # Sync slash commands on startup. Global sync can take ~1h to
