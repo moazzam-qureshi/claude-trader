@@ -65,6 +65,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
     from trading_sandwich.strategies.grid.reverse import ReverseGridStrategy
     from trading_sandwich.strategies.grid.standard import StandardGridStrategy
+    from trading_sandwich.strategies.mean_reversion.bollinger import (
+        BollingerReversionStrategy,
+    )
     from trading_sandwich.strategies.mean_reversion.rsi import (
         RsiMeanReversionStrategy,
     )
@@ -75,6 +78,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "grid_geometric": GeometricGridStrategy,
         "grid_reverse": ReverseGridStrategy,
         "rsi_mean_reversion": RsiMeanReversionStrategy,
+        "bollinger_reversion": BollingerReversionStrategy,
     }
 
 
