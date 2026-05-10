@@ -233,3 +233,70 @@ universe:
       core: 5
       active: 25
       observation: 15
+
+# ---------- Phase 3 — Regime classifier (spec §6.2) ----------
+
+regime_classifier:
+  primary_timeframe: "4h"
+  hysteresis_required_consecutive: 2
+  adx_trend_threshold: 25
+  adx_range_threshold: 20
+  atr_pct_volatile_threshold: 0.03
+  atr_pct_quiet_threshold: 0.015
+  manual_override_max_duration_hours: 168  # 1 week max
+
+# ---------- Phase 3 — Strategy ↔ regime compatibility (spec §6.2) ----------
+#
+# Declarative map of which strategy types are eligible to run in which
+# regimes. Loader: src/trading_sandwich/strategies/regime_compat.py.
+# Wildcard "*" means compatible with every regime.
+#
+# Strategies are listed regardless of implementation status. Catalog
+# (STRATEGY_CATALOG in regime_compat.py) is the source of truth for
+# which IDs are valid; implementations land across Waves 1/2/3.
+
+strategy_regime_compatibility:
+  # Range capture (Category A)
+  grid_standard: [RANGE_VOLATILE, RANGE_QUIET, TREND_UP]
+  grid_infinity: [RANGE_VOLATILE, TREND_UP]
+  grid_geometric: [RANGE_VOLATILE, RANGE_QUIET]
+  grid_reverse: [RANGE_VOLATILE, RANGE_QUIET, TREND_UP]
+  rsi_mean_reversion: [RANGE_VOLATILE]
+  bollinger_reversion: [RANGE_VOLATILE, RANGE_QUIET]
+  z_score_reversion: [RANGE_VOLATILE, RANGE_QUIET]
+  range_expansion_contraction: [RANGE_VOLATILE, RANGE_QUIET]
+  # Accumulation (Category B)
+  dca_calendar: ["*"]
+  dca_value_averaging: ["*"]
+  dca_volatility_adj: ["*"]
+  dca_indicator: [TREND_DOWN, RANGE_VOLATILE]
+  dca_fear_greed: ["*"]
+  dca_mvrv_nupl: ["*"]
+  dca_drawdown_tier: ["*"]
+  dca_pre_halving: ["*"]
+  dca_capitulation: [TREND_DOWN]
+  dca_profit_ladder: [TREND_UP]
+  # Rebalancing (Category C)
+  rebalance_periodic: ["*"]
+  rebalance_threshold: ["*"]
+  rebalance_risk_parity: ["*"]
+  hodl_plus_plus: [RANGE_VOLATILE, RANGE_QUIET, TREND_UP]
+  # Trend (Category D)
+  trend_ma_crossover: [TREND_UP]
+  trend_donchian: [TREND_UP, TREND_DOWN]
+  trend_volatility_breakout: [RANGE_QUIET, TREND_UP]
+  trend_time_series_momentum: [TREND_UP]
+  trend_multi_tf_alignment: [TREND_UP]
+  # Rotation (Category E)
+  rotation_cross_sectional: [TREND_UP, RANGE_VOLATILE]
+  rotation_sector: ["*"]
+  rotation_btc_dominance: ["*"]
+  rotation_pair: [RANGE_VOLATILE]
+  rotation_index_tilt: ["*"]
+  # Cycle (Category F)
+  cycle_halving: ["*"]
+  cycle_bottom_detection: [TREND_DOWN]
+  cycle_top_detection: [TREND_UP]
+  # Volatility regime (Category G)
+  vol_targeting: ["*"]
+  vol_anti_cyclical: ["*"]
