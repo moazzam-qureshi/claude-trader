@@ -61,10 +61,12 @@ def _default_registry() -> dict[str, type[Strategy]]:
     """Production registry. Wave 1 strategies register here as they land.
     Empty for Wave 0 — the foundation smoke test injects its own
     NoOpStrategy."""
+    from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
     from trading_sandwich.strategies.grid.standard import StandardGridStrategy
 
     return {
         "grid_standard": StandardGridStrategy,
+        "grid_infinity": InfinityGridStrategy,
     }
 
 
