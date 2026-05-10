@@ -197,6 +197,22 @@ class TradingBot(discord.Client):
         if interaction.type != discord.InteractionType.component:
             return
         custom_id = interaction.data.get("custom_id", "") if interaction.data else ""
+
+        # First try strategy buttons (Phase 3 plan Task 1.14). On miss
+        # fall through to the legacy proposal approve/reject/details.
+        from trading_sandwich.discord.strategies_buttons import (
+            UnknownStrategyButtonError,
+            handle_strategy_button,
+            parse_strategy_button_id,
+        )
+        try:
+            strat_action, strategy_id = parse_strategy_button_id(custom_id)
+        except UnknownStrategyButtonError:
+            pass
+        else:
+            await handle_strategy_button(interaction, strat_action, strategy_id)
+            return
+
         try:
             action, proposal_id = parse_custom_id(custom_id)
         except ValueError:
