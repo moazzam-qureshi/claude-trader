@@ -63,12 +63,14 @@ def _default_registry() -> dict[str, type[Strategy]]:
     NoOpStrategy."""
     from trading_sandwich.strategies.grid.geometric import GeometricGridStrategy
     from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
+    from trading_sandwich.strategies.grid.reverse import ReverseGridStrategy
     from trading_sandwich.strategies.grid.standard import StandardGridStrategy
 
     return {
         "grid_standard": StandardGridStrategy,
         "grid_infinity": InfinityGridStrategy,
         "grid_geometric": GeometricGridStrategy,
+        "grid_reverse": ReverseGridStrategy,
     }
 
 
