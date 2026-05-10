@@ -39,6 +39,13 @@ from trading_sandwich.strategies.base import (
     Strategy,
     StrategyContext,
 )
+from trading_sandwich.strategies.grid._base import (
+    deploy_buy_ladder,
+    emit_sells_for_fills,
+)
+
+
+_COID_PREFIX = "gridgeo"
 
 
 def _read_params(params: dict[str, Any]) -> tuple[Decimal, Decimal, int]:
@@ -91,29 +98,13 @@ class GeometricGridStrategy(Strategy):
         size_per_level: Decimal,
     ) -> list[OrderIntent]:
         prices = _geometric_levels(low, pct_spacing, n_levels)
-        intents: list[OrderIntent] = []
-        levels_state: list[dict[str, Any]] = []
-        for i, price in enumerate(prices):
-            should_submit = price <= mid
-            coid = f"gridgeo-{ctx.strategy_id}-L{i}-entry"
-            if should_submit:
-                intents.append(OrderIntent(
-                    symbol=ctx.symbol,
-                    order_type="limit",
-                    size_usd=size_per_level,
-                    limit_price=price,
-                    client_order_id=coid,
-                    role="entry",
-                    grid_level=i,
-                ))
-            levels_state.append({
-                "price": str(price),
-                "side": "buy",
-                "submitted": should_submit,
-                "filled_buy": False,
-                "submitted_sell": False,
-                "client_order_id": coid,
-            })
+        intents, levels_state = deploy_buy_ladder(
+            ctx=ctx,
+            prices=prices,
+            mid=mid,
+            size_per_level=size_per_level,
+            coid_prefix=_COID_PREFIX,
+        )
         ctx.state["pct_spacing"] = str(pct_spacing)
         ctx.state["levels"] = levels_state
         return intents
@@ -123,28 +114,11 @@ class GeometricGridStrategy(Strategy):
         ctx: StrategyContext,
         size_per_level: Decimal,
     ) -> list[OrderIntent]:
-        levels = ctx.state["levels"]
-        intents: list[OrderIntent] = []
-        for i, lvl in enumerate(levels):
-            if not lvl.get("filled_buy"):
-                continue
-            if lvl.get("submitted_sell"):
-                continue
-            if i + 1 >= len(levels):
-                continue
-            sell_price = Decimal(levels[i + 1]["price"])
-            sell_coid = f"gridgeo-{ctx.strategy_id}-L{i + 1}-exit"
-            intents.append(OrderIntent(
-                symbol=ctx.symbol,
-                order_type="limit",
-                size_usd=size_per_level,
-                limit_price=sell_price,
-                client_order_id=sell_coid,
-                role="exit",
-                grid_level=i + 1,
-            ))
-            lvl["submitted_sell"] = True
-        return intents
+        return emit_sells_for_fills(
+            ctx=ctx,
+            size_per_level=size_per_level,
+            coid_prefix=_COID_PREFIX,
+        )
 
     def graceful_shutdown(self, ctx: StrategyContext) -> list[OrderIntent]:
         return []
