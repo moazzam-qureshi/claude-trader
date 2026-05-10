@@ -175,6 +175,23 @@ services:
     command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
               "-Q", "execution", "-n", "execution@%h", "--loglevel=info"]
 
+  # Phase 3 — strategy worker (plan Task 1.15). Ticks every active
+  # strategy on a 30s beat schedule. Reads strategies.repo.list_active(),
+  # dispatches per strategy_type via registry, persists state with
+  # optimistic locking. One bad strategy gets marked errored without
+  # taking down the worker.
+  strategy-worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - ./:/app
+    command: ["celery", "-A", "trading_sandwich.celery_app", "worker",
+              "-Q", "strategies", "-n", "strategies@%h", "--loglevel=info"]
+
   celery-beat:
     build: .
     restart: unless-stopped

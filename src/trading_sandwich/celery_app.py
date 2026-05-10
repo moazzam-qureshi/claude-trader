@@ -53,6 +53,8 @@ app = Celery(
         "trading_sandwich.execution.worker",
         "trading_sandwich.execution.paper_match",
         "trading_sandwich.execution.watchdog",
+        # Phase 3 — strategy-worker (plan Task 1.15)
+        "trading_sandwich.strategies.worker",
     ],
 )
 
@@ -76,6 +78,7 @@ app.conf.update(
         "trading_sandwich.execution.worker.*": {"queue": "execution"},
         "trading_sandwich.execution.paper_match.*": {"queue": "execution"},
         "trading_sandwich.execution.watchdog.*": {"queue": "execution"},
+        "trading_sandwich.strategies.worker.*": {"queue": "strategies"},
     },
     beat_schedule={
         # Microstructure pollers — one entry per (symbol x task),
@@ -126,6 +129,14 @@ app.conf.update(
         "heartbeat_tick": {
             "task": "trading_sandwich.triage.heartbeat.heartbeat_tick_celery",
             "schedule": 15 * 60.0,
+        },
+        # Phase 3 — strategy worker (plan Task 1.15). Fires every 30s.
+        # Each tick: lists active strategies, ticks each via its registry
+        # class, persists state. Idempotent — safe to skip a tick or run
+        # twice in a window.
+        "strategies_tick": {
+            "task": "trading_sandwich.strategies.worker.strategies_tick_celery",
+            "schedule": 30.0,
         },
         # Discord notifier retry sweeper for unposted universe events.
         "discord_universe_retry": {
