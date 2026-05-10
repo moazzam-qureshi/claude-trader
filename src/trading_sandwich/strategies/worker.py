@@ -71,6 +71,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.mean_reversion.rsi import (
         RsiMeanReversionStrategy,
     )
+    from trading_sandwich.strategies.mean_reversion.z_score import (
+        ZScoreReversionStrategy,
+    )
 
     return {
         "grid_standard": StandardGridStrategy,
@@ -79,6 +82,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "grid_reverse": ReverseGridStrategy,
         "rsi_mean_reversion": RsiMeanReversionStrategy,
         "bollinger_reversion": BollingerReversionStrategy,
+        "z_score_reversion": ZScoreReversionStrategy,
     }
 
 
