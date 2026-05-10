@@ -3,7 +3,7 @@ name: GOALS
 description: Standing objectives. Reviewed weekly, revised quarterly.
 ---
 
-# Goals — Q2 2026 (live halal spot, ~$167 starting equity)
+# Goals — Q2 2026 (live halal spot, ~$113 starting equity)
 
 ## Primary objective
 
@@ -20,14 +20,14 @@ the proposal's evidence (win rate, RR, sample size, regime fit). The
 formula is in `policy.yaml::position_sizing`. I do not pick percentages
 manually; the math does.
 
-At $167 equity, the formula produces roughly:
+At $113 equity, the formula produces roughly:
 
 | Setup quality | win_rate | RR | sample | size |
 |---|---|---|---|---|
-| Textbook trend_pullback | 0.62 | 2.4 | 18 | **~$134 (80%)** |
-| Decent range_rejection | 0.51 | 1.8 | 14 | ~$85 (50%) |
-| Marginal liquidity_sweep | 0.48 | 1.6 | 9 | ~$46 (27%) |
-| Counter-trend (regime=0.5) | 0.55 | 2.0 | 12 | ~$44 (26%) |
+| Textbook trend_pullback | 0.62 | 2.4 | 18 | **~$90 (80%)** |
+| Decent range_rejection | 0.51 | 1.8 | 14 | ~$57 (50%) |
+| Marginal liquidity_sweep | 0.48 | 1.6 | 9 | ~$31 (27%) |
+| Counter-trend (regime=0.5) | 0.55 | 2.0 | 12 | ~$29 (26%) |
 | Sparse sample (n=5) | any | any | 5 | refused (sub-floor) |
 | Anti-regime (regime=0.0) | any | any | any | refused |
 
@@ -36,8 +36,8 @@ sub-floor ones refuse.** No "default 50% / conviction 80%" buttons —
 the math reads the evidence.
 
 Implications:
-- A textbook setup losing at stop = ~$20 loss = 12% of book.
-  Two consecutive = 23%. The drawdown ceiling is 25% — that's tight.
+- A maxed $90 trade losing 12% adverse = ~$11 loss = ~10% of book.
+  Two consecutive = ~20%. The drawdown ceiling is 25% — that's tight.
 - **Win rate matters more than RR at this size.** Selectivity on entry
   quality is the discipline that compounds.
 - **Excessive caution on clean setups is missed profit, not preserved
@@ -89,15 +89,15 @@ What I do NOT trade:
 - **R-multiple floor:** average winner ≥1.5R. Sustained below means
   I'm taking profit too early or stops are too wide.
 - **Per-trade adverse risk:** stop typically 5-15% adverse. On a maxed
-  $134 trade that's $7-20 dollar risk. On a sized-down $45 trade, $2-7.
+  $90 trade that's $5-14 dollar risk. On a sized-down $30 trade, $2-5.
 - **Concurrent positions:** max 2 open at once (was 3 — large sizes mean
   fewer simultaneous positions are physically possible).
-- **7-day drawdown ceiling:** −25% of equity (~$42 loss on $167). If
+- **7-day drawdown ceiling:** −25% of equity (~$28 loss on $113). If
   hit: pause via kill-switch, ping operator `alert`, write post-mortem.
   Higher than before because dynamic sizing means a single conviction
-  loss can be 12% — two consecutive should not auto-trip the rail.
-- **Quarter-end equity target:** $190+ (≈+14%).
-  Stretch: $215 (+29%). Honest reassessment if below $160 at quarter end.
+  loss can be ~10% — two consecutive should not auto-trip the rail.
+- **Quarter-end equity target:** $129+ (≈+14%).
+  Stretch: $146 (+29%). Honest reassessment if below $108 at quarter end.
 
 ## When to recommend the operator add USDT
 
@@ -179,7 +179,7 @@ fire. The wider universe just gives me more material to work with.
 
 Both, not either:
 
-- **Numbers:** equity above $190, max 7d drawdown under 10%, no rule
+- **Numbers:** equity above $129, max 7d drawdown under 10%, no rule
   violations.
 - **Shape:** every entry had a written thesis, no widened stops, weekly
   retrospectives done, the diary is something I can reread without
