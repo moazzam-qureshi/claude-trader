@@ -8,16 +8,15 @@ from trading_sandwich._policy import load_policy
 
 
 def symbols() -> list[str]:
-    """Flat list of tradeable symbols across core+watchlist+observation tiers.
+    """Flat list of tradeable symbols across core+active+observation tiers.
 
-    Phase 2.7 introduced a tiered universe; this helper preserves the original
-    flat-list contract by flattening across active tiers. Excluded symbols
-    are not returned (they are not tradeable).
+    Phase 3 (spec §6.1) renamed the second tier from `watchlist` to
+    `active`. Excluded symbols are not returned (they are not tradeable).
     """
     u = load_policy()["universe"]
     if isinstance(u, dict) and "tiers" in u:
         out: list[str] = []
-        for tier in ("core", "watchlist", "observation"):
+        for tier in ("core", "active", "observation"):
             out.extend(u["tiers"].get(tier, {}).get("symbols", []))
         return out
     return list(u)

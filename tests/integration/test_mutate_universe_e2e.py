@@ -16,9 +16,13 @@ SAMPLE_POLICY = {
     "universe": {
         "tiers": {
             "core": {"symbols": ["BTCUSDT", "ETHUSDT"]},
-            "watchlist": {"symbols": ["SOLUSDT"]},
+            "active": {"symbols": ["SOLUSDT"]},
             "observation": {"symbols": []},
-            "excluded": {"symbols": ["SHIBUSDT"]},
+            "excluded": {
+                "symbols_lending": [],
+                "symbols_perp_protocols": [],
+                "symbols_memecoins": ["SHIBUSDT"],
+            },
         },
         "hard_limits": {
             "min_24h_volume_usd_floor": 100_000_000,
@@ -26,7 +30,7 @@ SAMPLE_POLICY = {
             "excluded_symbols_locked": ["SHIBUSDT"],
             "core_promotions_operator_only": True,
             "max_total_universe_size": 20,
-            "max_per_tier": {"core": 4, "watchlist": 8, "observation": 12},
+            "max_per_tier": {"core": 4, "active": 8, "observation": 12},
         },
     }
 }

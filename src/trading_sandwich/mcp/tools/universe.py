@@ -79,7 +79,12 @@ async def get_universe() -> dict:
     Use this at the start of every shift to see what symbols you are
     mandated to trade. Each tier carries: symbols, size_multiplier,
     max_concurrent_positions, shift_attention. Excluded symbols are
-    listed for awareness but cannot be traded.
+    listed for awareness but cannot be traded; the excluded block
+    is sub-categorized by reason
+    (symbols_lending / symbols_perp_protocols / symbols_memecoins).
+
+    Phase 3 (spec §6.1) renamed the second tier from `watchlist` to
+    `active`. Callers should read `tiers['active']`, not `watchlist`.
     """
     raw = yaml.safe_load(POLICY_PATH.read_text())
     universe = raw["universe"]
@@ -88,7 +93,7 @@ async def get_universe() -> dict:
         "hard_limits": universe["hard_limits"],
         "active_symbols": [
             sym
-            for tier in ("core", "watchlist", "observation")
+            for tier in ("core", "active", "observation")
             for sym in universe["tiers"].get(tier, {}).get("symbols", [])
         ],
     }

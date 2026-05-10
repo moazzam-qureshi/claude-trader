@@ -107,9 +107,17 @@ def universe_show() -> None:
     """Print current policy.yaml::universe.tiers snapshot."""
     raw = yaml.safe_load(Path("/app/policy.yaml").read_text())
     tiers = raw["universe"]["tiers"]
-    for tier in ("core", "watchlist", "observation", "excluded"):
+    for tier in ("core", "active", "observation"):
         symbols = tiers.get(tier, {}).get("symbols", [])
         typer.echo(f"{tier:<12} ({len(symbols):>2}): {', '.join(symbols) or '(empty)'}")
+    excluded = tiers.get("excluded", {})
+    excluded_all: list[str] = []
+    for subkey in ("symbols_lending", "symbols_perp_protocols", "symbols_memecoins"):
+        excluded_all.extend(excluded.get(subkey, []))
+    typer.echo(
+        f"{'excluded':<12} ({len(excluded_all):>2}): "
+        f"{', '.join(excluded_all) or '(empty)'}"
+    )
 
 
 @universe_app.command("events")

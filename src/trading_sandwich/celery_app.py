@@ -13,7 +13,7 @@ from trading_sandwich.logging import configure_logging
 
 def _universe_symbols() -> list[str]:
     """Read tradeable universe from policy.yaml. Returns flat list across
-    core+watchlist+observation tiers (excluded tier is not polled).
+    core+active+observation tiers (excluded tier is not polled).
 
     Local helper so celery_app.py doesn't import trading_sandwich._universe
     (which would create a circular import chain).
@@ -21,14 +21,12 @@ def _universe_symbols() -> list[str]:
     try:
         with open(Path("policy.yaml")) as f:
             data = yaml.safe_load(f)
-        # Phase 2.7+: universe is tiered. Flatten core+watchlist+observation.
         u = data.get("universe", {})
         if isinstance(u, dict) and "tiers" in u:
             symbols: list[str] = []
-            for tier in ("core", "watchlist", "observation"):
+            for tier in ("core", "active", "observation"):
                 symbols.extend(u["tiers"].get(tier, {}).get("symbols", []))
             return symbols
-        # Backwards compat: legacy flat-list format.
         if isinstance(u, list):
             return list(u)
         return ["BTCUSDT", "ETHUSDT"]

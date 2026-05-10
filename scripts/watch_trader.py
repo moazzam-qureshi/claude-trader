@@ -328,20 +328,29 @@ def render_what_watching(state_body: str, last_spawned_at: datetime | None, widt
 def render_universe(policy: dict, width: int) -> list[str]:
     universe = (policy.get("universe") or {}).get("tiers", {})
     body = []
-    for tier in ("core", "watchlist", "observation", "excluded"):
+    tier_color = {
+        "core": C_GREEN, "active": C_CYAN,
+        "observation": C_BLUE, "excluded": C_DARK,
+    }
+    for tier in ("core", "active", "observation"):
         symbols = universe.get(tier, {}).get("symbols", [])
         n = len(symbols)
         sym_str = ", ".join(symbols) if symbols else "(empty)"
-        tier_color = {
-            "core": C_GREEN, "watchlist": C_CYAN,
-            "observation": C_BLUE, "excluded": C_DARK,
-        }[tier]
         size_mult = universe.get(tier, {}).get("size_multiplier")
         smult = f" size×{size_mult}" if size_mult is not None else ""
         body.append(
-            f"  {color(f'{tier:<12}', tier_color + C_BOLD)} "
+            f"  {color(f'{tier:<12}', tier_color[tier] + C_BOLD)} "
             f"({n:>2}){color(smult, C_DARK)}: {sym_str}"
         )
+    excluded = universe.get("excluded", {})
+    excluded_all: list[str] = []
+    for subkey in ("symbols_lending", "symbols_perp_protocols", "symbols_memecoins"):
+        excluded_all.extend(excluded.get(subkey, []))
+    excluded_label = f"{'excluded':<12}"
+    body.append(
+        f"  {color(excluded_label, tier_color['excluded'] + C_BOLD)} "
+        f"({len(excluded_all):>2}): {', '.join(excluded_all) or '(empty)'}"
+    )
     return panel("UNIVERSE", body, width)
 
 

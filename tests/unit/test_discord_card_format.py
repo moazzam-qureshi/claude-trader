@@ -31,7 +31,7 @@ def test_hard_limit_card_names_the_limit():
         attempted={
             "event_type": "promote",
             "symbol": "SOLUSDT",
-            "from_tier": "watchlist",
+            "from_tier": "active",
             "to_tier": "core",
             "rationale": "the data warrants it now",
         },

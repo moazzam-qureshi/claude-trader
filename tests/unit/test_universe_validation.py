@@ -19,9 +19,13 @@ SAMPLE_POLICY = {
     "universe": {
         "tiers": {
             "core": {"symbols": ["BTCUSDT", "ETHUSDT"]},
-            "watchlist": {"symbols": ["SOLUSDT"]},
+            "active": {"symbols": ["SOLUSDT"]},
             "observation": {"symbols": []},
-            "excluded": {"symbols": ["SHIBUSDT"]},
+            "excluded": {
+                "symbols_lending": [],
+                "symbols_perp_protocols": [],
+                "symbols_memecoins": ["SHIBUSDT"],
+            },
         },
         "hard_limits": {
             "min_24h_volume_usd_floor": 100_000_000,
@@ -29,7 +33,7 @@ SAMPLE_POLICY = {
             "excluded_symbols_locked": ["SHIBUSDT"],
             "core_promotions_operator_only": True,
             "max_total_universe_size": 20,
-            "max_per_tier": {"core": 4, "watchlist": 8, "observation": 12},
+            "max_per_tier": {"core": 4, "active": 8, "observation": 12},
         },
     }
 }
@@ -75,9 +79,13 @@ def test_validate_blocks_when_total_universe_full(tmp_path: Path):
         "universe": {
             "tiers": {
                 "core": {"symbols": [f"C{i}USDT" for i in range(4)]},
-                "watchlist": {"symbols": [f"W{i}USDT" for i in range(8)]},
+                "active": {"symbols": [f"A{i}USDT" for i in range(8)]},
                 "observation": {"symbols": [f"O{i}USDT" for i in range(8)]},
-                "excluded": {"symbols": []},
+                "excluded": {
+                    "symbols_lending": [],
+                    "symbols_perp_protocols": [],
+                    "symbols_memecoins": [],
+                },
             },
             "hard_limits": SAMPLE_POLICY["universe"]["hard_limits"],
         }
@@ -100,9 +108,13 @@ def test_validate_blocks_when_per_tier_full(tmp_path: Path):
         "universe": {
             "tiers": {
                 "core": {"symbols": []},
-                "watchlist": {"symbols": []},
+                "active": {"symbols": []},
                 "observation": {"symbols": [f"O{i}USDT" for i in range(12)]},
-                "excluded": {"symbols": []},
+                "excluded": {
+                    "symbols_lending": [],
+                    "symbols_perp_protocols": [],
+                    "symbols_memecoins": [],
+                },
             },
             "hard_limits": SAMPLE_POLICY["universe"]["hard_limits"],
         }
@@ -147,5 +159,5 @@ def test_apply_mutation_demote_moves_symbol(tmp_path: Path):
     )
     apply_mutation(policy_path, policy, req)
     reread = yaml.safe_load(policy_path.read_text())
-    assert "SOLUSDT" not in reread["universe"]["tiers"]["watchlist"]["symbols"]
+    assert "SOLUSDT" not in reread["universe"]["tiers"]["active"]["symbols"]
     assert "SOLUSDT" in reread["universe"]["tiers"]["observation"]["symbols"]

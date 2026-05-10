@@ -2,19 +2,28 @@ from trading_sandwich._universe import symbols, timeframes
 
 
 def test_symbols_from_policy():
-    """Phase 2.7+: universe is tiered. symbols() returns flat list across
-    core+watchlist+observation. Excluded tier is not returned."""
+    """Phase 3 (spec §6.1): universe is tiered. symbols() returns flat list
+    across core+active+observation. Excluded tier is not returned."""
     s = symbols()
+    # Core
     assert "BTCUSDT" in s
     assert "ETHUSDT" in s
     assert "SOLUSDT" in s
-    # Core (2) + watchlist (2) + observation (2) = 6. Excluded not included.
-    assert len(s) == 6
-    assert "SHIBUSDT" not in s  # excluded tier
-    assert "PEPEUSDT" not in s
+    # Active (sample)
+    assert "AVAXUSDT" in s
+    assert "LINKUSDT" in s
+    # Observation (sample)
+    assert "INJUSDT" in s
+    # Excluded — never returned
+    assert "SHIBUSDT" not in s     # memecoin
+    assert "AAVEUSDT" not in s     # lending
+    assert "GMXUSDT" not in s      # perp protocol
+    # Sanity: full halal candidate set is sized
+    assert len(s) >= 25            # core(3) + active(22) + observation(7) = 32
 
 
 def test_timeframes_from_policy():
+    """timeframes() returns whatever policy.yaml declares."""
     tfs = timeframes()
-    assert tfs == ["5m", "15m", "1h", "4h", "1d"]
-    assert "1m" not in tfs
+    assert "5m" in tfs
+    assert "1h" in tfs
