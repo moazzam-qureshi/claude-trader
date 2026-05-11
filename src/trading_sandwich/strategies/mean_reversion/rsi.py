@@ -34,6 +34,7 @@ from trading_sandwich.strategies.base import (
     Strategy,
     StrategyContext,
 )
+from trading_sandwich.strategies.mean_reversion._base import apply_signal
 
 
 _COID_PREFIX = "rsi"
@@ -78,48 +79,15 @@ class RsiMeanReversionStrategy(Strategy):
         oversold, overbought, entry_size = _read_params(ctx.params)
 
         kind = _classify(rsi, oversold, overbought)
-        last_kind = ctx.state.get("last_signal_kind")
-        position = Decimal(ctx.state.get("position_size_usd", "0"))
-
-        # Hysteresis: don't fire while we're stuck in the same regime as
-        # last fire. last_kind is updated on EVERY tick so 'neutral' is
-        # the natural reset.
-        if kind == last_kind:
-            ctx.state["last_signal_kind"] = kind
-            ctx.state["position_size_usd"] = str(position)
-            return []
-
-        intents: list[OrderIntent] = []
-        if kind == "oversold":
-            tick_idx = int(ctx.state.get("entry_count", 0))
-            coid = f"{_COID_PREFIX}-{ctx.strategy_id}-entry-{tick_idx}"
-            intents.append(OrderIntent(
-                symbol=ctx.symbol,
-                order_type="limit",
-                size_usd=entry_size,
-                limit_price=mid,
-                client_order_id=coid,
-                role="entry",
-            ))
-            position += entry_size
-            ctx.state["entry_count"] = tick_idx + 1
-        elif kind == "overbought" and position > Decimal("0"):
-            tick_idx = int(ctx.state.get("exit_count", 0))
-            coid = f"{_COID_PREFIX}-{ctx.strategy_id}-exit-{tick_idx}"
-            intents.append(OrderIntent(
-                symbol=ctx.symbol,
-                order_type="limit",
-                size_usd=position,
-                limit_price=mid,
-                client_order_id=coid,
-                role="exit",
-            ))
-            position = Decimal("0")
-            ctx.state["exit_count"] = tick_idx + 1
-
-        ctx.state["last_signal_kind"] = kind
-        ctx.state["position_size_usd"] = str(position)
-        return intents
+        return apply_signal(
+            ctx=ctx,
+            kind=kind,
+            entry_kind_name="oversold",
+            exit_kind_name="overbought",
+            mid=mid,
+            entry_size=entry_size,
+            coid_prefix=_COID_PREFIX,
+        )
 
     def graceful_shutdown(self, ctx: StrategyContext) -> list[OrderIntent]:
         return []
