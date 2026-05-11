@@ -93,6 +93,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.rebalance.periodic import (
         PeriodicRebalanceStrategy,
     )
+    from trading_sandwich.strategies.rebalance.risk_parity import (
+        RiskParityStrategy,
+    )
     from trading_sandwich.strategies.rebalance.threshold import (
         ThresholdRebalanceStrategy,
     )
@@ -113,6 +116,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "dca_drawdown_tier": DrawdownTierStrategy,
         "rebalance_periodic": PeriodicRebalanceStrategy,
         "rebalance_threshold": ThresholdRebalanceStrategy,
+        "rebalance_risk_parity": RiskParityStrategy,
     }
 
 
