@@ -93,6 +93,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.rebalance.periodic import (
         PeriodicRebalanceStrategy,
     )
+    from trading_sandwich.strategies.rebalance.threshold import (
+        ThresholdRebalanceStrategy,
+    )
 
     return {
         "grid_standard": StandardGridStrategy,
@@ -109,6 +112,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "dca_indicator": IndicatorTriggeredDcaStrategy,
         "dca_drawdown_tier": DrawdownTierStrategy,
         "rebalance_periodic": PeriodicRebalanceStrategy,
+        "rebalance_threshold": ThresholdRebalanceStrategy,
     }
 
 
