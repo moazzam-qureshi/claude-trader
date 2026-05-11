@@ -62,6 +62,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     Empty for Wave 0 — the foundation smoke test injects its own
     NoOpStrategy."""
     from trading_sandwich.strategies.dca.calendar import CalendarDcaStrategy
+    from trading_sandwich.strategies.dca.indicator_triggered import (
+        IndicatorTriggeredDcaStrategy,
+    )
     from trading_sandwich.strategies.dca.value_averaging import (
         ValueAveragingStrategy,
     )
@@ -97,6 +100,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "dca_calendar": CalendarDcaStrategy,
         "dca_value_averaging": ValueAveragingStrategy,
         "dca_volatility_adj": VolatilityAdjustedDcaStrategy,
+        "dca_indicator": IndicatorTriggeredDcaStrategy,
     }
 
 
