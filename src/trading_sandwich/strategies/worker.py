@@ -78,6 +78,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
     from trading_sandwich.strategies.grid.reverse import ReverseGridStrategy
     from trading_sandwich.strategies.grid.standard import StandardGridStrategy
+    from trading_sandwich.strategies.hybrid.hodl_plus_plus import (
+        HodlPlusPlusStrategy,
+    )
     from trading_sandwich.strategies.mean_reversion.bollinger import (
         BollingerReversionStrategy,
     )
@@ -117,6 +120,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "rebalance_periodic": PeriodicRebalanceStrategy,
         "rebalance_threshold": ThresholdRebalanceStrategy,
         "rebalance_risk_parity": RiskParityStrategy,
+        "hodl_plus_plus": HodlPlusPlusStrategy,
     }
 
 
