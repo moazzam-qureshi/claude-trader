@@ -102,6 +102,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.rebalance.threshold import (
         ThresholdRebalanceStrategy,
     )
+    from trading_sandwich.strategies.trend.donchian import (
+        DonchianBreakoutStrategy,
+    )
     from trading_sandwich.strategies.trend.ma_crossover import (
         MaCrossoverStrategy,
     )
@@ -125,6 +128,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "rebalance_risk_parity": RiskParityStrategy,
         "hodl_plus_plus": HodlPlusPlusStrategy,
         "trend_ma_crossover": MaCrossoverStrategy,
+        "trend_donchian": DonchianBreakoutStrategy,
     }
 
 
