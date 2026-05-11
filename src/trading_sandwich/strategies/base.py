@@ -97,10 +97,22 @@ class _Frozen(BaseModel):
 class OrderIntent(_Frozen):
     """A strategy's request to place one order. The strategy-worker
     converts this into an OrderRequest before handing to the execution
-    rail. Halal spot: side is long-only, enforced here."""
+    rail. Halal spot: side is long-only, enforced here.
+
+    `side` (position side) is always 'long' — halal-spot inviolable.
+    `direction` is the *trade* direction: 'buy' adds to the long, 'sell'
+    reduces it. A 'sell' only ever liquidates inventory the strategy
+    already holds — it never opens a short. role='exit'/'stop_loss'/
+    'take_profit' are always sells; role='entry' is always a buy;
+    role='rebalance' can be either (the rebalance family up- or down-
+    sizes), which is exactly why `direction` exists — `role` alone is
+    ambiguous there. Defaults to 'buy' so existing buy-emitting code is
+    unchanged; sell-emitting branches set direction='sell' explicitly.
+    """
 
     symbol: str
     side: Literal["long"] = "long"
+    direction: Literal["buy", "sell"] = "buy"
     order_type: Literal["market", "limit", "stop"]
     size_usd: Decimal = Field(gt=Decimal("0"))
     limit_price: Decimal | None = None

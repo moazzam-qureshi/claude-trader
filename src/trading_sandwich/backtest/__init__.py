@@ -16,9 +16,6 @@ Public surface:
 
 Limitations of this first cut (documented; not blockers for the
 framework's purpose of catching gross strategy bugs before live):
-  - rebalance-family down-sizes are modelled as buys (role='rebalance'
-    doesn't encode direction; a future OrderIntent.direction field
-    would close this).
   - the default snapshot builder covers price/ATR/EMA/RSI/Bollinger
     only; strategies needing exotic feeds (BTC.D, multi-TF booleans)
     need a custom snapshot_builder.

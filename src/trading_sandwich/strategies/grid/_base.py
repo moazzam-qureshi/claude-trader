@@ -99,6 +99,7 @@ def emit_sells_for_fills(
             limit_price=sell_price,
             client_order_id=sell_coid,
             role="exit",
+            direction="sell",
             grid_level=i + 1,
         ))
         lvl["submitted_sell"] = True

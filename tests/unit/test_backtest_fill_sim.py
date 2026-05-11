@@ -11,7 +11,9 @@ None if it wouldn't fill that bar). Models:
 Fills are denominated in base units: qty = filled_usd / fill_price,
 and the fee (in USD) reduces the cash impact. The Fill carries
 enough to update a position book: side, role, fill_price, qty,
-fee_usd, gross_usd, net_usd.
+fee_usd, gross_usd, net_usd. The trade direction (`side` on the Fill)
+comes straight from OrderIntent.direction — role is an audit
+passthrough only.
 """
 from __future__ import annotations
 
@@ -63,7 +65,7 @@ def test_market_buy_fills_at_close_plus_slippage_minus_fee():
 def test_market_sell_fills_at_close_minus_slippage_minus_fee():
     intent = OrderIntent(
         symbol="BTCUSDT", order_type="market", size_usd=Decimal("100"),
-        client_order_id="x-2", role="exit",
+        client_order_id="x-2", role="exit", direction="sell",
     )
     fill = simulate_fill(
         intent, _candle(c="100"), fee_bps=Decimal("10"),
@@ -149,6 +151,7 @@ def test_limit_sell_fills_when_high_touches_limit():
     intent = OrderIntent(
         symbol="BTCUSDT", order_type="limit", size_usd=Decimal("100"),
         limit_price=Decimal("108"), client_order_id="x-7", role="exit",
+        direction="sell",
     )
     # candle high 110 >= 108 → fills at 108
     fill = simulate_fill(
@@ -165,6 +168,7 @@ def test_limit_sell_does_not_fill_when_high_below_limit():
     intent = OrderIntent(
         symbol="BTCUSDT", order_type="limit", size_usd=Decimal("100"),
         limit_price=Decimal("120"), client_order_id="x-8", role="exit",
+        direction="sell",
     )
     fill = simulate_fill(
         intent, _candle(h="110"), fee_bps=Decimal("10"),
@@ -173,21 +177,39 @@ def test_limit_sell_does_not_fill_when_high_below_limit():
     assert fill is None
 
 
-# ---------- Role-derived side ----------
+# ---------- direction-derived side ----------
 #
-# The simulator derives the trade direction from `role`:
-#   entry, rebalance → buy
-#   exit, take_profit, stop_loss → sell
-# `rebalance` defaulting to buy is a known limitation: the rebalance
-# family emits role='rebalance' for *both* up- and down-sizes, so a
-# rebalance-trim is modelled as a buy in backtest. The grid / mean-
-# reversion / trend families use unambiguous entry/exit roles and
-# backtest correctly. (A future OrderIntent.direction field would
-# close this gap.)
+# The simulator takes the trade direction straight from
+# OrderIntent.direction ('buy' | 'sell'). role is carried onto the Fill
+# only as an audit passthrough. This closes the old rebalance-as-buy
+# limitation: a rebalance-trim emits direction='sell' and is modelled
+# as a sell.
 
 
-def test_buy_side_roles():
-    for role in ("entry", "rebalance"):
+def test_side_comes_from_direction_not_role():
+    # A 'rebalance' role with direction='sell' fills as a sell (the
+    # rebalance-trim case the old role-inference got wrong).
+    trim = OrderIntent(
+        symbol="BTCUSDT", order_type="market", size_usd=Decimal("10"),
+        client_order_id="rb-trim", role="rebalance", direction="sell",
+    )
+    fill = simulate_fill(trim, _candle(c="100"),
+                         fee_bps=Decimal("0"), slippage_bps=Decimal("0"))
+    assert fill.side == "sell"
+    assert fill.role == "rebalance"  # audit passthrough unchanged
+
+    # A 'rebalance' role with the default direction is a buy.
+    add = OrderIntent(
+        symbol="BTCUSDT", order_type="market", size_usd=Decimal("10"),
+        client_order_id="rb-add", role="rebalance",
+    )
+    fill = simulate_fill(add, _candle(c="100"),
+                         fee_bps=Decimal("0"), slippage_bps=Decimal("0"))
+    assert fill.side == "buy"
+
+
+def test_default_direction_is_buy():
+    for role in ("entry", "rebalance", "take_profit", "stop_loss"):
         intent = OrderIntent(
             symbol="BTCUSDT", order_type="market", size_usd=Decimal("10"),
             client_order_id=f"r-{role}", role=role,
@@ -195,17 +217,6 @@ def test_buy_side_roles():
         fill = simulate_fill(intent, _candle(c="100"),
                              fee_bps=Decimal("0"), slippage_bps=Decimal("0"))
         assert fill.side == "buy"
-
-
-def test_sell_side_roles():
-    for role in ("exit", "take_profit", "stop_loss"):
-        intent = OrderIntent(
-            symbol="BTCUSDT", order_type="market", size_usd=Decimal("10"),
-            client_order_id=f"r-{role}", role=role,
-        )
-        fill = simulate_fill(intent, _candle(c="100"),
-                             fee_bps=Decimal("0"), slippage_bps=Decimal("0"))
-        assert fill.side == "sell"
 
 
 # ---------- Validation ----------

@@ -138,6 +138,7 @@ class RangeExpansionStrategy(Strategy):
                 limit_price=mid,
                 client_order_id=f"{_COID_PREFIX}-{ctx.strategy_id}-exit-{tick_idx}",
                 role="exit",
+                direction="sell",
             ))
             ctx.state["exit_count"] = tick_idx + 1
 

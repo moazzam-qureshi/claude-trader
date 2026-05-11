@@ -125,6 +125,7 @@ class ValueAveragingStrategy(Strategy):
                     limit_price=mid,
                     client_order_id=f"{_COID_PREFIX}-{ctx.strategy_id}-exit-{interval_count}",
                     role="exit",
+                    direction="sell",
                 ))
                 units -= sell_value / mid
                 if units < Decimal("0"):

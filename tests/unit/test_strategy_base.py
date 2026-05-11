@@ -192,6 +192,48 @@ def test_order_intent_rejects_short_side():
         )
 
 
+def test_order_intent_direction_defaults_to_buy():
+    """`direction` is the trade direction (buy/sell), distinct from
+    `side` (position side, always 'long' — halal spot). It defaults to
+    'buy' so the existing strategies are unaffected; only sell-emitting
+    branches set 'sell'. A 'sell' only ever reduces an existing long."""
+    intent = OrderIntent(
+        symbol="BTCUSDT",
+        order_type="limit",
+        size_usd=Decimal("10"),
+        client_order_id="x-1",
+        role="entry",
+    )
+    assert intent.direction == "buy"
+    assert intent.side == "long"  # unchanged — still long-only
+
+
+def test_order_intent_direction_can_be_sell():
+    intent = OrderIntent(
+        symbol="BTCUSDT",
+        order_type="limit",
+        size_usd=Decimal("10"),
+        limit_price=Decimal("70000"),
+        client_order_id="x-2",
+        role="exit",
+        direction="sell",
+    )
+    assert intent.direction == "sell"
+    assert intent.side == "long"  # a sell reduces the long; never opens a short
+
+
+def test_order_intent_rejects_invalid_direction():
+    with pytest.raises(Exception):
+        OrderIntent(
+            symbol="BTCUSDT",
+            order_type="market",
+            size_usd=Decimal("10"),
+            client_order_id="x-3",
+            role="entry",
+            direction="short",  # type: ignore[arg-type]
+        )
+
+
 def test_return_expectation_has_required_fields():
     er = ReturnExpectation(
         monthly_return_pct=Decimal("0.04"),

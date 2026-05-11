@@ -12,10 +12,10 @@ wouldn't fill that bar):
 it's treated like a market order (filled at close ± slippage). Fees
 apply to limit fills too (taker-equivalent — conservative).
 
-Trade direction is derived from OrderIntent.role:
-  entry, rebalance      → buy
-  exit, take_profit, stop_loss → sell
-(rebalance-as-buy is a known limitation — see backtest/__init__.py.)
+Trade direction comes straight from OrderIntent.direction ('buy' or
+'sell'). The rebalance family up- or down-sizes via the same role
+('rebalance'), so `direction` is the unambiguous source — role is kept
+on the Fill only as an audit passthrough.
 
 A Fill is denominated so a position book can be updated directly:
   side       — 'buy' | 'sell'
@@ -37,8 +37,6 @@ from trading_sandwich.strategies.base import OrderIntent
 
 
 _BPS = Decimal("10000")
-_BUY_ROLES = {"entry", "rebalance"}
-_SELL_ROLES = {"exit", "take_profit", "stop_loss"}
 
 
 @dataclass(frozen=True)
@@ -66,15 +64,6 @@ class Fill:
     client_order_id: str
 
 
-def _side_for_role(role: str) -> str:
-    if role in _SELL_ROLES:
-        return "sell"
-    if role in _BUY_ROLES:
-        return "buy"
-    # Defensive default — unknown role treated as a buy.
-    return "buy"
-
-
 def simulate_fill(
     intent: OrderIntent,
     candle: Candle,
@@ -84,7 +73,7 @@ def simulate_fill(
 ) -> Fill | None:
     """Simulate the fill of `intent` against `candle`. Returns the
     Fill, or None if a limit order wouldn't have been touched this bar."""
-    side = _side_for_role(intent.role)
+    side = intent.direction
     gross = intent.size_usd
 
     if intent.order_type == "limit":

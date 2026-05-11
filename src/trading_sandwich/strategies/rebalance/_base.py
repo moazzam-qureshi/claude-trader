@@ -64,6 +64,7 @@ def rebalance_toward_value(
         limit_price=mid,
         client_order_id=f"{coid_prefix}-{ctx.strategy_id}-rb{seq}",
         role="rebalance",
+        direction="sell",
     )
     new_units = units - sell_value / mid
     if new_units < Decimal("0"):

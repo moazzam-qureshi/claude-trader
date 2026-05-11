@@ -107,6 +107,7 @@ class ReverseGridStrategy(Strategy):
                     limit_price=price,
                     client_order_id=coid,
                     role="exit",
+                    direction="sell",
                     grid_level=i,
                 ))
             levels_state.append({

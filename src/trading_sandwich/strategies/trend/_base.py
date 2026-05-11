@@ -74,6 +74,7 @@ def apply_binary_trend_signal(
                 limit_price=mid,
                 client_order_id=f"{coid_prefix}-{ctx.strategy_id}-exit-{exit_count}",
                 role="exit",
+                direction="sell",
             ))
             exit_count += 1
         units = Decimal("0")

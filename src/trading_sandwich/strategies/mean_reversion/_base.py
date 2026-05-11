@@ -75,6 +75,7 @@ def apply_signal(
             limit_price=mid,
             client_order_id=f"{coid_prefix}-{ctx.strategy_id}-exit-{tick_idx}",
             role="exit",
+            direction="sell",
         ))
         position = Decimal("0")
         ctx.state["exit_count"] = tick_idx + 1
