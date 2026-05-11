@@ -65,6 +65,13 @@ class ClaudeResponse(_Base):
 class OrderRequest(_Base):
     symbol: str
     side: Side
+    # Trade direction. `side` is the *position* side (long/short — halal
+    # spot keeps it 'long'); `direction` is whether this order adds to
+    # the position ('buy') or reduces it ('sell'). A 'sell' only ever
+    # liquidates held inventory — it never opens a short. Defaults to
+    # 'buy' so the proposal path (long entries) is unchanged; the
+    # strategy path sets 'sell' on sell-against-fill / rebalance-trim.
+    direction: Literal["buy", "sell"] = "buy"
     order_type: OrderType
     size_usd: Decimal
     limit_price: Decimal | None = None

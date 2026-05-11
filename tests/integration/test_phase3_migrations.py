@@ -418,3 +418,50 @@ def test_portfolio_decisions_has_policy_snapshot(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
         _check_columns(url, "portfolio_decisions", ["policy_snapshot"])
+
+
+# --- 0018 orders.direction column -------------------------------------------
+
+
+@pytest.mark.integration
+def test_orders_has_direction_column_defaulting_buy(env_for_postgres):
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _check_columns(url, "orders", ["direction"])
+
+        async def _check_default() -> None:
+            engine = create_async_engine(url)
+            try:
+                async with engine.begin() as conn:
+                    # insert a minimal order row without specifying direction
+                    await conn.execute(text(
+                        "INSERT INTO orders (order_id, client_order_id, symbol, "
+                        "side, order_type, size_usd, status, execution_mode, "
+                        "stop_loss, policy_version) VALUES "
+                        "(gen_random_uuid(), 'c1', 'BTCUSDT', 'long', 'market', "
+                        "10, 'filled', 'paper', '{}'::jsonb, 'test')"
+                    ))
+                async with engine.connect() as conn:
+                    r = await conn.execute(text(
+                        "SELECT direction FROM orders WHERE client_order_id = 'c1'"
+                    ))
+                    assert r.scalar() == "buy"
+                # the CHECK constraint rejects an unknown direction
+                async with engine.begin() as conn:
+                    try:
+                        await conn.execute(text(
+                            "INSERT INTO orders (order_id, client_order_id, symbol, "
+                            "side, direction, order_type, size_usd, status, "
+                            "execution_mode, stop_loss, policy_version) VALUES "
+                            "(gen_random_uuid(), 'c2', 'BTCUSDT', 'long', 'short', "
+                            "'market', 10, 'filled', 'paper', '{}'::jsonb, 'test')"
+                        ))
+                        raise AssertionError("CHECK constraint should reject 'short'")
+                    except Exception as exc:
+                        assert "ck_orders_direction_valid" in str(exc) or "check" in str(exc).lower()
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_check_default())

@@ -52,6 +52,38 @@ def test_order_request_requires_stop_loss():
         )
 
 
+def test_order_request_direction_defaults_to_buy():
+    req = OrderRequest(
+        symbol="BTCUSDT", side="long", order_type="market",
+        size_usd=Decimal("100"),
+        stop_loss=StopLossSpec(kind="structural", value=Decimal("0")),
+        client_order_id="x",
+    )
+    assert req.direction == "buy"
+    assert req.side == "long"
+
+
+def test_order_request_direction_can_be_sell():
+    req = OrderRequest(
+        symbol="BTCUSDT", side="long", direction="sell", order_type="limit",
+        size_usd=Decimal("50"), limit_price=Decimal("70000"),
+        stop_loss=StopLossSpec(kind="structural", value=Decimal("0")),
+        client_order_id="y",
+    )
+    assert req.direction == "sell"
+    assert req.side == "long"  # halal — a sell only reduces the long
+
+
+def test_order_request_rejects_invalid_direction():
+    with pytest.raises(ValidationError):
+        OrderRequest(
+            symbol="BTCUSDT", side="long", direction="short",  # type: ignore[arg-type]
+            order_type="market", size_usd=Decimal("10"),
+            stop_loss=StopLossSpec(kind="structural", value=Decimal("0")),
+            client_order_id="z",
+        )
+
+
 def test_alert_payload_structure():
     payload = AlertPayload(
         title="x", body="y", signal_id=uuid4(), decision_id=uuid4()

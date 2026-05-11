@@ -36,6 +36,7 @@ class Order(Base):
     proposal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
     side: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'buy'"))
     order_type: Mapped[str] = mapped_column(Text, nullable=False)
     size_base: Mapped[Decimal | None] = mapped_column(Numeric)
     size_usd: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
