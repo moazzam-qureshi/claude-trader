@@ -61,6 +61,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
     """Production registry. Wave 1 strategies register here as they land.
     Empty for Wave 0 — the foundation smoke test injects its own
     NoOpStrategy."""
+    from trading_sandwich.strategies.dca.calendar import CalendarDcaStrategy
     from trading_sandwich.strategies.grid.geometric import GeometricGridStrategy
     from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
     from trading_sandwich.strategies.grid.reverse import ReverseGridStrategy
@@ -87,6 +88,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "bollinger_reversion": BollingerReversionStrategy,
         "z_score_reversion": ZScoreReversionStrategy,
         "range_expansion_contraction": RangeExpansionStrategy,
+        "dca_calendar": CalendarDcaStrategy,
     }
 
 
