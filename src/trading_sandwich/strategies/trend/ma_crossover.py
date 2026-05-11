@@ -38,6 +38,7 @@ from trading_sandwich.strategies.base import (
     Strategy,
     StrategyContext,
 )
+from trading_sandwich.strategies.trend._base import apply_binary_trend_signal
 
 
 _COID_PREFIX = "trndma"
@@ -70,44 +71,14 @@ class MaCrossoverStrategy(Strategy):
         position_usd = _read_params(ctx.params)
 
         bullish = ma_fast > ma_slow
-        in_position = bool(ctx.state.get("in_position", False))
-        units = Decimal(ctx.state.get("position_units", "0"))
-        entry_count = int(ctx.state.get("entry_count", 0))
-        exit_count = int(ctx.state.get("exit_count", 0))
-
-        intents: list[OrderIntent] = []
-        if bullish and not in_position:
-            intents.append(OrderIntent(
-                symbol=ctx.symbol,
-                order_type="limit",
-                size_usd=position_usd,
-                limit_price=mid,
-                client_order_id=f"{_COID_PREFIX}-{ctx.strategy_id}-entry-{entry_count}",
-                role="entry",
-            ))
-            units = position_usd / mid
-            in_position = True
-            entry_count += 1
-        elif not bullish and in_position:
-            exit_value = units * mid
-            if exit_value > Decimal("0"):
-                intents.append(OrderIntent(
-                    symbol=ctx.symbol,
-                    order_type="limit",
-                    size_usd=exit_value,
-                    limit_price=mid,
-                    client_order_id=f"{_COID_PREFIX}-{ctx.strategy_id}-exit-{exit_count}",
-                    role="exit",
-                ))
-                exit_count += 1
-            units = Decimal("0")
-            in_position = False
-
-        ctx.state["in_position"] = in_position
-        ctx.state["position_units"] = str(units)
-        ctx.state["entry_count"] = entry_count
-        ctx.state["exit_count"] = exit_count
-        return intents
+        return apply_binary_trend_signal(
+            ctx=ctx,
+            enter_signal=bullish,
+            exit_signal=not bullish,
+            position_usd=position_usd,
+            mid=mid,
+            coid_prefix=_COID_PREFIX,
+        )
 
     def graceful_shutdown(self, ctx: StrategyContext) -> list[OrderIntent]:
         return []
