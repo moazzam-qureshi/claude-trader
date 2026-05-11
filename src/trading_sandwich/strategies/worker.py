@@ -61,6 +61,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     """Production registry. Wave 1 strategies register here as they land.
     Empty for Wave 0 — the foundation smoke test injects its own
     NoOpStrategy."""
+    from trading_sandwich.strategies.cycle.halving_position import (
+        HalvingCyclePositioningStrategy,
+    )
     from trading_sandwich.strategies.dca.calendar import CalendarDcaStrategy
     from trading_sandwich.strategies.dca.drawdown_tier import (
         DrawdownTierStrategy,
@@ -145,6 +148,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "trend_time_series_momentum": TimeSeriesMomentumStrategy,
         "trend_multi_tf_alignment": MultiTfAlignmentStrategy,
         "rotation_btc_dominance": BtcDominanceRotationStrategy,
+        "cycle_halving": HalvingCyclePositioningStrategy,
     }
 
 
