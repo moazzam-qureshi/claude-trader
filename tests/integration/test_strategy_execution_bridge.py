@@ -242,6 +242,59 @@ def test_intent_blocked_by_rail_writes_no_order_but_a_risk_event(
 
 
 @pytest.mark.integration
+def test_sell_intent_persists_order_with_direction_sell(env_for_postgres, monkeypatch):
+    """A grid sell-against-fill (direction='sell') round-trips: the
+    persisted orders row has direction='sell' and side='long' (halal —
+    a sell only reduces the long)."""
+    from trading_sandwich.strategies import repo, worker
+
+    class _OneSell(Strategy):
+        def tick(self, ctx, snapshot):
+            if ctx.state.get("done"):
+                return []
+            ctx.state["done"] = True
+            return [OrderIntent(
+                symbol=ctx.symbol, order_type="limit", size_usd=Decimal("6"),
+                limit_price=Decimal("110"),
+                client_order_id=f"sx-{ctx.strategy_id}-L3",
+                role="exit", direction="sell", grid_level=3,
+            )]
+
+        def graceful_shutdown(self, ctx):
+            return []
+
+        def emergency_stop(self, ctx):
+            return []
+
+        def expected_return_for_regime(self, regime):
+            return ReturnExpectation(monthly_return_pct=Decimal("0"), confidence=0.0)
+
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        env_for_postgres(url)
+        command.upgrade(Config("alembic.ini"), "head")
+        _paper_mode(monkeypatch)
+        _seed_candles(url, "BTCUSDT", "100")
+
+        sid = asyncio.run(repo.create_strategy(
+            strategy_type="onesell", symbol="BTCUSDT",
+            capital_allocated_usd=Decimal("30"), params={}, deployed_by="claude",
+        ))
+        asyncio.run(repo.mark_active(sid))
+        asyncio.run(worker.tick_all_strategies(registry={"onesell": _OneSell}))
+
+        rows = _query(url,
+            "SELECT o.side, o.direction, o.order_type, so.role, so.grid_level "
+            "FROM orders o JOIN strategy_orders so ON so.order_id = o.order_id "
+            "WHERE so.strategy_id = :s", {"s": sid})
+        assert len(rows) == 1
+        side, direction, otype, role, gl = rows[0]
+        assert side == "long"          # halal — position side unchanged
+        assert direction == "sell"     # trade direction
+        assert otype == "limit" and role == "exit" and gl == 3
+
+
+@pytest.mark.integration
 def test_intent_over_max_order_usd_is_blocked(env_for_postgres, monkeypatch):
     from trading_sandwich import _policy
     from trading_sandwich.strategies import repo, worker

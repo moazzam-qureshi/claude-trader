@@ -61,11 +61,13 @@ class CCXTSpotAdapter(ExchangeAdapter):
                 ),
             )
 
-        ccxt_side = "buy"  # only longs reach here
+        # Trade direction: a 'buy' adds to the long; a 'sell' liquidates
+        # held spot inventory (allowed — you own it). Never a short.
+        ccxt_side = "sell" if request.direction == "sell" else "buy"
         ccxt_type = {"market": "market", "limit": "limit"}[request.order_type]
 
-        # Convert USD notional to base size at last close. For market orders
-        # we use the live ticker; for limit orders we use limit_price.
+        # Convert USD notional to base size. For limit orders we use the
+        # limit price; for market orders the live ticker.
         if request.limit_price:
             entry_price = Decimal(str(request.limit_price))
         else:
@@ -76,6 +78,17 @@ class CCXTSpotAdapter(ExchangeAdapter):
         # Plain spot order — no isolated/margin params.
         params = {"newClientOrderId": request.client_order_id}
 
+        # A protective stop is attached only for a buy that carries a real
+        # stop price. The strategy path emits a no-op structural stop
+        # (value 0) — there's nothing to protect a grid limit-buy below
+        # market with no leverage — and a sell is itself an exit, so no
+        # stop in either case.
+        attach_stop = (
+            ccxt_side == "buy"
+            and request.stop_loss is not None
+            and Decimal(str(request.stop_loss.value)) > 0
+        )
+
         try:
             r = await self._exchange.create_order(
                 symbol=request.symbol,
@@ -85,18 +98,19 @@ class CCXTSpotAdapter(ExchangeAdapter):
                 price=float(request.limit_price) if request.limit_price else None,
                 params=params,
             )
-            # Stop-loss as a sell stop_loss_limit on the long. No margin params.
-            await self._exchange.create_order(
-                symbol=request.symbol,
-                type="stop_loss_limit",
-                side="sell",
-                amount=base_size,
-                price=float(request.stop_loss.value),
-                params={
-                    "stopPrice": float(request.stop_loss.value),
-                    "newClientOrderId": f"stop-{request.client_order_id}",
-                },
-            )
+            if attach_stop:
+                # Stop-loss as a sell stop_loss_limit on the long.
+                await self._exchange.create_order(
+                    symbol=request.symbol,
+                    type="stop_loss_limit",
+                    side="sell",
+                    amount=base_size,
+                    price=float(request.stop_loss.value),
+                    params={
+                        "stopPrice": float(request.stop_loss.value),
+                        "newClientOrderId": f"stop-{request.client_order_id}",
+                    },
+                )
             return OrderReceipt(
                 exchange_order_id=str(r.get("id")),
                 status=("filled" if r.get("status") == "closed" else "open"),

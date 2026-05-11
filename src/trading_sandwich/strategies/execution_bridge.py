@@ -63,13 +63,15 @@ def _policy_version(strategy_row: StrategyRow) -> str:
 
 def intent_to_order_request(intent: OrderIntent) -> OrderRequest:
     """Translate an OrderIntent into an OrderRequest. `side` maps
-    directly (both long-only). `direction` (buy/sell) isn't part of
-    OrderRequest yet — it's carried for the fill-back loop via the
-    strategy_orders.role link; the adapter only needs side + type +
-    size + (limit) price."""
+    directly (both long-only — halal-spot inviolable). `direction`
+    (buy/sell) maps directly too: a 'sell' liquidates held inventory,
+    never opens a short. The CCXT adapter uses `direction` for the
+    create_order side; the paper matcher uses it for which way a limit
+    fill goes."""
     return OrderRequest(
         symbol=intent.symbol,
-        side=intent.side,  # always 'long' — halal-spot inviolable
+        side=intent.side,
+        direction=intent.direction,
         order_type=intent.order_type,
         size_usd=intent.size_usd,
         limit_price=intent.limit_price,
@@ -124,6 +126,7 @@ async def _persist_order_and_link(
             exchange_order_id=receipt.exchange_order_id,
             decision_id=None, signal_id=None, proposal_id=None,
             symbol=request.symbol, side=request.side,
+            direction=request.direction,
             order_type=request.order_type,
             size_usd=request.size_usd,
             size_base=receipt.filled_base,

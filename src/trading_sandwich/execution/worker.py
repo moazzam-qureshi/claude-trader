@@ -70,6 +70,7 @@ async def _persist_order(
             decision_id=None, signal_id=None,
             proposal_id=proposal_id,
             symbol=request.symbol, side=request.side,
+            direction=request.direction,
             order_type=request.order_type,
             size_usd=request.size_usd,
             size_base=receipt.filled_base,
