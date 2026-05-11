@@ -56,17 +56,15 @@ def _query(url: str, sql: str, params: dict | None = None) -> list[tuple]:
 
 
 def _seed_candles(url: str, symbol: str, close: str) -> None:
-    """One 1m candle (for build_snapshot) + one 5m candle (for the
-    paper adapter / paper_match)."""
-    for tf, dt in (("1m", _T0), ("5m", _T0 - timedelta(minutes=5))):
-        _exec(
-            url,
-            "INSERT INTO raw_candles (symbol, timeframe, open_time, close_time, "
-            "open, high, low, close, volume) "
-            "VALUES (:s, :tf, :ot, :ct, :c, :c, :c, :c, 1)",
-            {"s": symbol, "tf": tf, "ot": dt, "ct": dt + timedelta(minutes=1),
-             "c": close},
-        )
+    """One 5m candle — both build_snapshot and the paper adapter /
+    paper_match read 5m (the live ingestor's finest grain)."""
+    _exec(
+        url,
+        "INSERT INTO raw_candles (symbol, timeframe, open_time, close_time, "
+        "open, high, low, close, volume) "
+        "VALUES (:s, '5m', :ot, :ct, :c, :c, :c, :c, 1)",
+        {"s": symbol, "ot": _T0, "ct": _T0 + timedelta(minutes=5), "c": close},
+    )
 
 
 class _OneMarketBuy(Strategy):

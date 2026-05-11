@@ -44,10 +44,12 @@ from sqlalchemy.pool import NullPool
 from trading_sandwich.config import get_settings
 
 
-# Primary timeframe the snapshot is built from. The strategy worker
-# ticks every 30s; 1m candles are the finest grain the ingestor keeps,
-# so they're the freshest read of "where is the price now".
-_PRIMARY_TIMEFRAME = "1m"
+# Primary timeframe the snapshot is built from. The live ingestor
+# streams `universe_timeframes` (5m + 1h) — 5m is the finest grain that
+# is actually kept current, so it's the freshest read of "where is the
+# price now". (1m candles exist only as stale historical backfill; the
+# paper adapter and paper_match read 5m for the same reason.)
+_PRIMARY_TIMEFRAME = "5m"
 
 _DONCHIAN_WINDOW = 20  # bars to scan for the high/low fallback
 

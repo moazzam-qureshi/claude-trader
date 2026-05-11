@@ -70,7 +70,7 @@ def _seed_candle(async_url: str, symbol: str) -> None:
                     text(
                         "INSERT INTO raw_candles (symbol, timeframe, open_time, "
                         "close_time, open, high, low, close, volume) "
-                        "VALUES (:s, '1m', :ot, :ct, 100, 101, 99, 100, 1)"
+                        "VALUES (:s, '5m', :ot, :ct, 100, 101, 99, 100, 1)"
                     ),
                     {"s": symbol, "ot": ot, "ct": ct},
                 )

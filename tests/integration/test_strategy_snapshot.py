@@ -86,12 +86,12 @@ def test_build_snapshot_reads_latest_features_and_candle(env_for_postgres):
         command.upgrade(Config("alembic.ini"), "head")
 
         # Two candles so reference_price (prior close) is well defined.
-        _insert_candle(url, symbol="BTCUSDT", tf="1m", i=0,
+        _insert_candle(url, symbol="BTCUSDT", tf="5m", i=0,
                        open_="99", high="101", low="98", close="100")
-        _insert_candle(url, symbol="BTCUSDT", tf="1m", i=1,
+        _insert_candle(url, symbol="BTCUSDT", tf="5m", i=1,
                        open_="100", high="103", low="99", close="102")
         _insert_features(
-            url, symbol="BTCUSDT", tf="1m", i=1, close_price="102",
+            url, symbol="BTCUSDT", tf="5m", i=1, close_price="102",
             rsi_14="61.5", bb_lower="95", bb_upper="110",
             atr_14="2.04", atr_percentile_100="42",
             ema_8="101", ema_21="100", ema_55="98", ema_200="95",
@@ -141,10 +141,10 @@ def test_build_snapshot_warmup_fallbacks_when_features_null(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
-        _insert_candle(url, symbol="BTCUSDT", tf="1m", i=0,
+        _insert_candle(url, symbol="BTCUSDT", tf="5m", i=0,
                        open_="199", high="205", low="195", close="200")
         # features row exists but every indicator column is NULL
-        _insert_features(url, symbol="BTCUSDT", tf="1m", i=0, close_price="200")
+        _insert_features(url, symbol="BTCUSDT", tf="5m", i=0, close_price="200")
 
         snap = asyncio.run(build_snapshot("BTCUSDT"))
         assert snap is not None
@@ -175,7 +175,7 @@ def test_build_snapshot_works_without_features_row(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
-        _insert_candle(url, symbol="ETHUSDT", tf="1m", i=0,
+        _insert_candle(url, symbol="ETHUSDT", tf="5m", i=0,
                        open_="9", high="11", low="8", close="10")
 
         snap = asyncio.run(build_snapshot("ETHUSDT"))
@@ -217,11 +217,11 @@ def test_worker_tick_passes_populated_snapshot_to_strategy(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
-        _insert_candle(url, symbol="BTCUSDT", tf="1m", i=0,
+        _insert_candle(url, symbol="BTCUSDT", tf="5m", i=0,
                        open_="99", high="101", low="98", close="100")
-        _insert_candle(url, symbol="BTCUSDT", tf="1m", i=1,
+        _insert_candle(url, symbol="BTCUSDT", tf="5m", i=1,
                        open_="100", high="103", low="99", close="102")
-        _insert_features(url, symbol="BTCUSDT", tf="1m", i=1, close_price="102",
+        _insert_features(url, symbol="BTCUSDT", tf="5m", i=1, close_price="102",
                          rsi_14="60", ema_21="101", ema_55="98", atr_14="2")
 
         sid = asyncio.run(repo.create_strategy(

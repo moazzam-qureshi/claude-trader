@@ -55,7 +55,7 @@ def _query(async_url: str, sql: str, params: dict | None = None) -> list[tuple]:
     return asyncio.run(_run())
 
 
-def _seed_candle(async_url: str, symbol: str, *, timeframe: str = "1m") -> None:
+def _seed_candle(async_url: str, symbol: str, *, timeframe: str = "5m") -> None:
     """Insert one raw_candles row so build_snapshot has market data to
     return — without it the worker skips the strategy as 'no data'."""
     from datetime import datetime, timezone

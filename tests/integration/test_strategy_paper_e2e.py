@@ -85,9 +85,8 @@ def test_grid_paper_lifecycle_buy_fill_then_sell_leg(env_for_postgres, monkeypat
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
-        # mid_price comes from the latest 1m candle; paper_match reads 5m.
-        # mid = 91 so only the bottom rung (90) gets a buy LIMIT this tick.
-        _candle(url, tf="1m", i=10, o="91", h="92", lo="90", c="91")
+        # build_snapshot and paper_match both read 5m. mid = 91 so only
+        # the bottom rung (90) gets a buy LIMIT this tick.
         _candle(url, tf="5m", i=5, o="91", h="92", lo="90", c="91")
 
         # --- deploy A1 grid: rungs at 90/95/100/105/110 ----------------
