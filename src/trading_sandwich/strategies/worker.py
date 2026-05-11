@@ -68,6 +68,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.mean_reversion.bollinger import (
         BollingerReversionStrategy,
     )
+    from trading_sandwich.strategies.mean_reversion.range_expansion import (
+        RangeExpansionStrategy,
+    )
     from trading_sandwich.strategies.mean_reversion.rsi import (
         RsiMeanReversionStrategy,
     )
@@ -83,6 +86,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "rsi_mean_reversion": RsiMeanReversionStrategy,
         "bollinger_reversion": BollingerReversionStrategy,
         "z_score_reversion": ZScoreReversionStrategy,
+        "range_expansion_contraction": RangeExpansionStrategy,
     }
 
 
