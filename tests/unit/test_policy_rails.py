@@ -86,12 +86,32 @@ async def test_rail_max_leverage_blocks(monkeypatch):
 
 @pytest.mark.anyio
 async def test_rail_universe_allowlist_blocks(monkeypatch):
-    from trading_sandwich import _policy
-    from trading_sandwich.execution.policy_rails import rail_universe_allowlist
+    from trading_sandwich.execution import policy_rails
     monkeypatch.setattr(
-        _policy, "get_universe_symbols", lambda: ["BTCUSDT", "ETHUSDT"],
+        policy_rails, "_universe_symbols", lambda: ["BTCUSDT", "ETHUSDT"],
     )
-    block = await rail_universe_allowlist(_proposal(symbol="DOGEUSDT"), _account())
+    block = await policy_rails.rail_universe_allowlist(
+        _proposal(symbol="DOGEUSDT"), _account(),
+    )
+    assert block is not None
+
+
+@pytest.mark.anyio
+async def test_rail_universe_allowlist_allows_real_universe_symbol():
+    """With the actual policy.yaml universe (nested core/active/observation
+    tiers), BTCUSDT must pass — the rail reads the flat symbol list, not
+    the dict keys. Regression for the bug where the rail's accessor
+    returned ['tiers', 'hard_limits']."""
+    from trading_sandwich.execution.policy_rails import rail_universe_allowlist
+    assert await rail_universe_allowlist(_proposal(symbol="BTCUSDT"), _account()) is None
+
+
+@pytest.mark.anyio
+async def test_rail_universe_allowlist_blocks_unknown_with_real_universe():
+    from trading_sandwich.execution.policy_rails import rail_universe_allowlist
+    block = await rail_universe_allowlist(
+        _proposal(symbol="NOTAREALCOINUSDT"), _account(),
+    )
     assert block is not None
 
 
@@ -169,7 +189,7 @@ async def test_evaluate_policy_returns_none_on_clean_proposal(monkeypatch):
     )
     monkeypatch.setattr(_policy, "is_trading_enabled", lambda: True)
     monkeypatch.setattr(_policy, "get_max_order_usd", lambda: Decimal("500"))
-    monkeypatch.setattr(_policy, "get_universe_symbols", lambda: ["BTCUSDT"])
+    monkeypatch.setattr(policy_rails, "_universe_symbols", lambda: ["BTCUSDT"])
     monkeypatch.setattr(
         policy_rails, "_account_state", AsyncMock(return_value=_account()),
     )

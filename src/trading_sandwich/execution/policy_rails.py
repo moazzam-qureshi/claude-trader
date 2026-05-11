@@ -28,6 +28,19 @@ from trading_sandwich.db.models_phase2 import (
 
 # --- helpers ----------------------------------------------------------------
 
+
+def _universe_symbols() -> list[str]:
+    """Flat tradeable-symbol list (core+active+observation tiers).
+
+    The Phase 3 universe in policy.yaml is a nested dict (`universe.tiers`)
+    — `_policy.get_universe_symbols()` iterates its top-level keys, which
+    is wrong (it returns ['tiers', 'hard_limits']). `_universe.symbols()`
+    is the accessor that unpacks the tiers correctly.
+    """
+    from trading_sandwich import _universe
+    return _universe.symbols()
+
+
 async def _kill_switch_active() -> bool:
     factory = get_session_factory()
     async with factory() as session:
@@ -167,7 +180,7 @@ async def rail_correlated_exposure(proposal, account: AccountState) -> str | Non
 
 
 async def rail_universe_allowlist(proposal, account: AccountState) -> str | None:
-    if proposal.symbol not in _policy.get_universe_symbols():
+    if proposal.symbol not in _universe_symbols():
         return f"symbol_not_in_universe ({proposal.symbol})"
     return None
 
