@@ -69,14 +69,27 @@ async def propose_trade(
     size_usd: Decimal | None = None,
     regime_multiplier: float = 1.0,
     time_in_force: Literal["GTC", "IOC", "FOK"] = "GTC",
+    emergency_override: bool = False,
 ) -> UUID:
-    """Propose a trade. Persisted only if all cross-checks pass.
+    """Propose a trade. FROZEN as of Phase 3 — see below.
+
+    **The discretionary-trader path is frozen.** Phase 3 onward, the
+    system runs mechanical strategies allocated by the Portfolio
+    Strategist; there are no individual trades to propose. This tool
+    rejects immediately unless called with `emergency_override=True`,
+    which is reserved for a hand-pulled emergency action (e.g. the
+    strategist needs a position flattened that no strategy's shutdown
+    logic will exit). The signal-worker still runs — the signals
+    dataset keeps growing for analytics — but nothing consumes it as a
+    trading loop.
+
+    With `emergency_override=True` the normal cross-checks below still
+    apply.
 
     Sizing: if `size_usd` is None (recommended for normal proposals),
     the size is computed dynamically by `compute_position_size()` using
     your evidence (win_rate, RR, sample, regime_multiplier). The formula
-    lives in policy.yaml::position_sizing. See GOALS.md for the table
-    of how setup quality maps to size.
+    lives in policy.yaml::position_sizing.
 
     Pass `size_usd` explicitly only for special cases (closing a partial
     position to a fixed amount, etc.) and document the override in
@@ -86,6 +99,14 @@ async def propose_trade(
     CLAUDE.md §3 cell map (default), 0.5 for marginal pairings (e.g.,
     divergence in mid-trend), 0.0 for anti-regime (will refuse).
     """
+    if not emergency_override:
+        raise ValueError(
+            "propose_trade is frozen (Phase 3): the discretionary-trader "
+            "path is closed — the Portfolio Strategist allocates mechanical "
+            "strategies, not individual trades. Pass emergency_override=True "
+            "only for a hand-pulled emergency action."
+        )
+
     # Dynamic sizing if Claude didn't override.
     if size_usd is None:
         from trading_sandwich._policy import (

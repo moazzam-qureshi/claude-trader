@@ -76,6 +76,7 @@ def test_approval_loop_end_to_end(env_for_postgres, env_for_redis, monkeypatch):
             expected_rr=Decimal("2.0"),
             worst_case_loss_usd=Decimal("3.68"),
             similar_signals_count=0,
+            emergency_override=True,  # propose_trade frozen as of Phase 3 (Task 2.29)
         )
         return sid, pid
 

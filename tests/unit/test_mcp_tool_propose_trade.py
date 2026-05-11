@@ -19,6 +19,10 @@ def _base_kwargs(**overrides):
         worst_case_loss_usd=Decimal("7.35"),
         similar_signals_count=10,
         similar_signals_win_rate=Decimal("0.6"),
+        # propose_trade is frozen as of Phase 3 (Task 2.29); these tests
+        # exercise the cross-check path that now sits behind the
+        # emergency override.
+        emergency_override=True,
     )
     base.update(overrides)
     return base

@@ -55,6 +55,7 @@ def test_propose_trade_writes_row_on_valid_input(env_for_postgres):
             expected_rr=Decimal("2.0"),
             worst_case_loss_usd=Decimal("3.68"),
             similar_signals_count=0,
+            emergency_override=True,  # propose_trade frozen as of Phase 3 (Task 2.29)
         )
         async with factory() as session:
             row = (await session.execute(

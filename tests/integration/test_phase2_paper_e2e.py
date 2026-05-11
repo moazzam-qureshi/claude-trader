@@ -85,6 +85,7 @@ def test_phase2_paper_e2e_signal_to_order(env_for_postgres, env_for_redis, monke
             expected_rr=Decimal("2.0"),
             worst_case_loss_usd=Decimal("3.68"),
             similar_signals_count=0,
+            emergency_override=True,  # propose_trade frozen as of Phase 3 (Task 2.29)
         )
         await approve_proposal(pid, approver="op-1")
         return pid
