@@ -6,14 +6,13 @@ Deploys A1 Standard Grid in paper mode and walks the whole loop:
   grid emits buy LIMITs at rungs <= mid → bridge submits via PaperAdapter
   → `orders` rows + `strategy_orders` rows created (status 'open') →
   drop a 5m candle whose low crosses the bottom rung → paper_match fills
-  that order → fill_apply flips levels[0]['filled_buy']=True → next
-  worker tick → emit_sells_for_fills emits a sell at rung 1 → bridge
-  submits it → a new sell `orders` row (role='exit', grid_level=1).
+  that buy → fill_apply flips levels[0]['filled_buy']=True → next worker
+  tick → emit_sells_for_fills emits a sell at rung 1 → bridge submits it
+  → a new sell `orders` row (role='exit', grid_level=1, direction='sell')
+  → price rises through rung 1 → direction-aware paper_match fills the
+  sell at the limit.
 
-This passing is the green light to ask the operator about Task 2.30.
-(The sell limit's *fill* is not asserted — paper_match doesn't yet know
-about OrderIntent.direction so it would model the sell-limit as a long
-buy; the strategy goal here is that the sell leg is *placed*.)
+This passing is the green light for the first live deployment.
 """
 from __future__ import annotations
 
@@ -146,15 +145,26 @@ def test_grid_paper_lifecycle_buy_fill_then_sell_leg(env_for_postgres, monkeypat
             "FROM orders o JOIN strategy_orders so ON so.order_id = o.order_id "
             "WHERE so.strategy_id = :s AND so.role = 'exit'", {"s": sid})
         assert len(sells) == 1
-        _oid, status, limit_px, role, gl = sells[0]
+        sell_oid, status, limit_px, role, gl = sells[0]
         assert role == "exit" and gl == 1
         assert limit_px == Decimal("95")
-        assert status == "open"  # placed (its fill isn't asserted here)
+        assert status == "open"  # placed; fills below when price rises to it
 
         # the rung now records the sell as submitted (idempotent next tick)
         st = _query(url,
             "SELECT state FROM strategy_state WHERE strategy_id = :s", {"s": sid})
         assert st[0][0]["levels"][0]["submitted_sell"] is True
+
+        # --- price rises through 95 → the sell limit fills -------------
+        # (direction-aware paper_match: a sell fills on candle.high >= limit)
+        _candle(url, tf="5m", i=15, o="93", h="96", lo="92", c="95")
+        sold = asyncio.run(match_async())
+        assert sold == 1
+        sell_status = _query(url,
+            "SELECT status, avg_fill_price FROM orders WHERE order_id = :o",
+            {"o": sell_oid})
+        assert sell_status[0][0] == "filled"
+        assert sell_status[0][1] == Decimal("95")  # filled at the limit
 
         # one more tick → no new orders (the one buy + one sell stand)
         asyncio.run(worker.tick_all_strategies())

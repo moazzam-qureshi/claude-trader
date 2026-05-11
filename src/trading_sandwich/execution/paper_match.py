@@ -40,10 +40,16 @@ async def match_async() -> int:
         candle = await _latest_candle(o.symbol)
         if candle is None or o.limit_price is None:
             continue
+        limit = Decimal(str(o.limit_price))
+        # A buy limit fills when price falls to it (candle.low <= limit);
+        # a sell limit fills when price rises to it (candle.high >= limit).
+        # `direction` is the trade direction — strategy sells (reducing a
+        # long) carry direction='sell' while side stays 'long'.
+        direction = getattr(o, "direction", "buy") or "buy"
         crossed = (
-            o.side == "long" and Decimal(str(candle.low)) <= Decimal(str(o.limit_price))
+            direction == "sell" and Decimal(str(candle.high)) >= limit
         ) or (
-            o.side == "short" and Decimal(str(candle.high)) >= Decimal(str(o.limit_price))
+            direction != "sell" and Decimal(str(candle.low)) <= limit
         )
         if not crossed:
             continue
