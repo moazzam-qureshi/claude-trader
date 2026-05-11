@@ -102,6 +102,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.rebalance.threshold import (
         ThresholdRebalanceStrategy,
     )
+    from trading_sandwich.strategies.rotation.btc_dominance import (
+        BtcDominanceRotationStrategy,
+    )
     from trading_sandwich.strategies.trend.donchian import (
         DonchianBreakoutStrategy,
     )
@@ -141,6 +144,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "trend_volatility_breakout": VolatilityBreakoutStrategy,
         "trend_time_series_momentum": TimeSeriesMomentumStrategy,
         "trend_multi_tf_alignment": MultiTfAlignmentStrategy,
+        "rotation_btc_dominance": BtcDominanceRotationStrategy,
     }
 
 
