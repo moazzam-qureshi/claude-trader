@@ -55,6 +55,8 @@ app = Celery(
         "trading_sandwich.execution.watchdog",
         # Phase 3 — strategy-worker (plan Task 1.15)
         "trading_sandwich.strategies.worker",
+        # Phase 3 — strategy fill-back loop (path-to-production Blocker B)
+        "trading_sandwich.strategies.fill_apply",
     ],
 )
 
@@ -79,6 +81,7 @@ app.conf.update(
         "trading_sandwich.execution.paper_match.*": {"queue": "execution"},
         "trading_sandwich.execution.watchdog.*": {"queue": "execution"},
         "trading_sandwich.strategies.worker.*": {"queue": "strategies"},
+        "trading_sandwich.strategies.fill_apply.*": {"queue": "strategies"},
     },
     beat_schedule={
         # Microstructure pollers — one entry per (symbol x task),
@@ -137,6 +140,13 @@ app.conf.update(
         "strategies_tick": {
             "task": "trading_sandwich.strategies.worker.strategies_tick_celery",
             "schedule": 30.0,
+        },
+        # Phase 3 — strategy fill-back (Blocker B). Mirrors paper_match's
+        # cadence: flips grid-rung flags in strategy_state when linked
+        # orders fill, so grids place their paired sell legs. Idempotent.
+        "strategy_fill_apply": {
+            "task": "trading_sandwich.strategies.fill_apply.apply_fills",
+            "schedule": 15.0,
         },
         # Discord notifier retry sweeper for unposted universe events.
         "discord_universe_retry": {
