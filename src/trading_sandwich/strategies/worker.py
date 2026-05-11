@@ -90,6 +90,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.mean_reversion.z_score import (
         ZScoreReversionStrategy,
     )
+    from trading_sandwich.strategies.rebalance.periodic import (
+        PeriodicRebalanceStrategy,
+    )
 
     return {
         "grid_standard": StandardGridStrategy,
@@ -105,6 +108,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "dca_volatility_adj": VolatilityAdjustedDcaStrategy,
         "dca_indicator": IndicatorTriggeredDcaStrategy,
         "dca_drawdown_tier": DrawdownTierStrategy,
+        "rebalance_periodic": PeriodicRebalanceStrategy,
     }
 
 
