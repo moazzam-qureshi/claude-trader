@@ -108,6 +108,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.trend.ma_crossover import (
         MaCrossoverStrategy,
     )
+    from trading_sandwich.strategies.trend.time_series_momentum import (
+        TimeSeriesMomentumStrategy,
+    )
     from trading_sandwich.strategies.trend.volatility_breakout import (
         VolatilityBreakoutStrategy,
     )
@@ -133,6 +136,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "trend_ma_crossover": MaCrossoverStrategy,
         "trend_donchian": DonchianBreakoutStrategy,
         "trend_volatility_breakout": VolatilityBreakoutStrategy,
+        "trend_time_series_momentum": TimeSeriesMomentumStrategy,
     }
 
 
