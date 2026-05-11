@@ -123,6 +123,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.trend.volatility_breakout import (
         VolatilityBreakoutStrategy,
     )
+    from trading_sandwich.strategies.vol_regime.vol_targeting import (
+        VolatilityTargetingStrategy,
+    )
 
     return {
         "grid_standard": StandardGridStrategy,
@@ -149,6 +152,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "trend_multi_tf_alignment": MultiTfAlignmentStrategy,
         "rotation_btc_dominance": BtcDominanceRotationStrategy,
         "cycle_halving": HalvingCyclePositioningStrategy,
+        "vol_targeting": VolatilityTargetingStrategy,
     }
 
 
