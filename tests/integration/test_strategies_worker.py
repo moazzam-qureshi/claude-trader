@@ -55,6 +55,30 @@ def _query(async_url: str, sql: str, params: dict | None = None) -> list[tuple]:
     return asyncio.run(_run())
 
 
+def _seed_candle(async_url: str, symbol: str, *, timeframe: str = "1m") -> None:
+    """Insert one raw_candles row so build_snapshot has market data to
+    return — without it the worker skips the strategy as 'no data'."""
+    from datetime import datetime, timezone
+
+    async def _run():
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                ot = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
+                ct = datetime(2026, 5, 11, 12, 1, tzinfo=timezone.utc)
+                await conn.execute(
+                    text(
+                        "INSERT INTO raw_candles (symbol, timeframe, open_time, "
+                        "close_time, open, high, low, close, volume) "
+                        "VALUES (:s, :tf, :ot, :ct, 100, 101, 99, 100, 1)"
+                    ),
+                    {"s": symbol, "tf": timeframe, "ot": ot, "ct": ct},
+                )
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+
+
 # --- Fixtures --------------------------------------------------------------
 
 
@@ -145,6 +169,7 @@ def test_noop_strategy_advances_last_tick_at(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
+        _seed_candle(url, "BTCUSDT")
         sid = asyncio.run(repo.create_strategy(
             strategy_type="noop", symbol="BTCUSDT",
             capital_allocated_usd=Decimal("30"),
@@ -170,6 +195,7 @@ def test_stateful_strategy_persists_state_across_ticks(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
+        _seed_candle(url, "BTCUSDT")
         sid = asyncio.run(repo.create_strategy(
             strategy_type="stateful", symbol="BTCUSDT",
             capital_allocated_usd=Decimal("30"),
@@ -198,6 +224,7 @@ def test_paused_strategy_is_not_ticked(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
+        _seed_candle(url, "BTCUSDT")
         active_sid = asyncio.run(repo.create_strategy(
             strategy_type="noop", symbol="BTCUSDT",
             capital_allocated_usd=Decimal("30"),
@@ -266,6 +293,8 @@ def test_exploding_strategy_marks_errored_and_continues(env_for_postgres):
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
 
+        _seed_candle(url, "BTCUSDT")
+        _seed_candle(url, "ETHUSDT")
         bomb = asyncio.run(repo.create_strategy(
             strategy_type="bomb", symbol="BTCUSDT",
             capital_allocated_usd=Decimal("30"),

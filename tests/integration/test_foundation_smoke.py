@@ -55,6 +55,30 @@ def _query(async_url: str, sql: str, params: dict | None = None) -> list[tuple]:
     return asyncio.run(_run())
 
 
+def _seed_candle(async_url: str, symbol: str) -> None:
+    """One raw_candles row so build_snapshot returns market data —
+    without it the worker skips the strategy as 'no data'."""
+    from datetime import datetime, timezone
+
+    async def _run():
+        engine = create_async_engine(async_url)
+        try:
+            async with engine.begin() as conn:
+                ot = datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc)
+                ct = datetime(2026, 5, 11, 12, 1, tzinfo=timezone.utc)
+                await conn.execute(
+                    text(
+                        "INSERT INTO raw_candles (symbol, timeframe, open_time, "
+                        "close_time, open, high, low, close, volume) "
+                        "VALUES (:s, '1m', :ot, :ct, 100, 101, 99, 100, 1)"
+                    ),
+                    {"s": symbol, "ot": ot, "ct": ct},
+                )
+        finally:
+            await engine.dispose()
+    asyncio.run(_run())
+
+
 class FoundationStrategy(Strategy):
     """Foundation smoke-test strategy. Returns no intents; advances a
     state counter so we can verify state persistence across ticks.
@@ -90,6 +114,7 @@ def test_wave_0_foundation_end_to_end(env_for_postgres):
         url = pg.get_connection_url()
         env_for_postgres(url)
         command.upgrade(Config("alembic.ini"), "head")
+        _seed_candle(url, "BTCUSDT")
 
         REGISTRY = {"dca_calendar": FoundationStrategy}
 

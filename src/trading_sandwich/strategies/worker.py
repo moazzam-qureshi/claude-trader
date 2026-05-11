@@ -14,22 +14,19 @@ as Wave 1 strategies land.
 Tick contract per strategy (in tick_all_strategies):
 
   load StrategyRow from list_active() → filter to active-only →
+  build_snapshot(symbol) — if None (no market data yet) skip + count →
   fetch state (or None if first tick) → build StrategyContext →
-  call cls().tick(ctx, snapshot={}) → save state with optimistic lock →
+  call cls().tick(ctx, snapshot) → save state with optimistic lock →
   update last_tick_at.
 
 On any exception inside tick(): catch → mark_errored with the
 exception message → log → continue with next strategy. One bad
 strategy never takes down the worker.
 
-Phase 0 of the worker emits NO orders to the execution rail. The
-returned OrderIntent list is logged for observability and stored as
-strategy_orders (Wave 1 task). Submitting to ccxt is wired in Wave 1
-when real strategies need it.
-
-Snapshot is empty `{}` for now — Wave 1 work plumbs in the latest
-features row + recent prices. Strategies that need data are Wave 1+;
-Wave 0 only ships NoOpStrategy in the smoke test.
+The returned OrderIntent list is logged for observability; converting
+intents into orders on the execution rail is the strategy↔execution
+bridge (a separate change). The snapshot the strategy receives is built
+from the latest features + raw_candles row by `snapshot.build_snapshot`.
 """
 from __future__ import annotations
 
@@ -44,6 +41,7 @@ from trading_sandwich.strategies.base import (
     StrategyContext,
     StrategyStatus,
 )
+from trading_sandwich.strategies.snapshot import build_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +52,7 @@ class TickReport:
     ticked: int = 0           # strategies whose tick() ran successfully
     skipped: int = 0          # unknown strategy_type (no class in registry)
     skipped_paused: int = 0   # paused strategies (in list_active but not ticked)
+    skipped_no_data: int = 0  # no raw_candles row for the symbol yet (warm-up)
     errored: int = 0          # strategies whose tick() raised → marked errored
 
 
@@ -160,9 +159,18 @@ async def _tick_one_strategy(
     row: repo.StrategyRow,
     cls: type[Strategy],
 ) -> bool:
-    """Tick one strategy. Returns True on success, raises on failure
-    (caller catches + marks_errored + counts)."""
+    """Tick one strategy. Returns True on success, False if skipped for
+    lack of market data (no raw_candles row for the symbol yet), raises
+    on failure (caller catches + marks_errored + counts)."""
     instance = cls()
+
+    snapshot = await build_snapshot(row.symbol)
+    if snapshot is None:
+        logger.warning(
+            "strategy %d (%s on %s): no market data yet, skipping tick",
+            row.id, row.strategy_type, row.symbol,
+        )
+        return False
 
     state_row = await repo.get_state(row.id)
     state = dict(state_row.state) if state_row is not None else {}
@@ -178,7 +186,7 @@ async def _tick_one_strategy(
         capital_deployed_usd=row.capital_deployed_usd,
     )
 
-    intents = instance.tick(ctx, snapshot={})
+    intents = instance.tick(ctx, snapshot=snapshot)
 
     # Persist state if the strategy mutated ctx.state. We always call
     # save_state — first tick or re-tick — so the upsert is idempotent.
@@ -218,8 +226,10 @@ async def tick_all_strategies(
             report.skipped += 1
             continue
         try:
-            await _tick_one_strategy(row, cls)
-            report.ticked += 1
+            if await _tick_one_strategy(row, cls):
+                report.ticked += 1
+            else:
+                report.skipped_no_data += 1
         except Exception as exc:
             logger.exception(
                 "strategy %d (%s on %s): tick raised, marking errored",
@@ -252,5 +262,6 @@ def strategies_tick_celery() -> dict:
         "ticked": report.ticked,
         "skipped": report.skipped,
         "skipped_paused": report.skipped_paused,
+        "skipped_no_data": report.skipped_no_data,
         "errored": report.errored,
     }
