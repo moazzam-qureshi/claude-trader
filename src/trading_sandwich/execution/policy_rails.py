@@ -245,12 +245,48 @@ _RAILS_IN_ORDER = [
 _AUTO_TRIP_REASONS = {"max_daily_realized_loss_breached"}
 
 
+# Rails meaningful for a mechanical-strategy order. A strategy intent is
+# always a long-only spot buy (adds to inventory) or a sell that reduces
+# inventory — no leverage, no shorting. So the proposal-specific rails
+# (stop-loss band/required, RR-anchored sizing caps, correlated-exposure,
+# per-symbol post-loss cooldown, first-trade cap, max-leverage) don't
+# apply. What still applies: the kill switch, the global trading toggle,
+# the per-order USD ceiling, the daily-realized-loss circuit breaker,
+# the daily order count, the universe allowlist, live-mode key gating,
+# and account-state sanity. Strategy capital is bounded by the strategy's
+# own allocation, so the open-positions caps (which count distinct
+# positions, not a grid's resting orders) are not part of this path.
+_INTENT_RAILS_IN_ORDER = [
+    rail_kill_switch,
+    rail_trading_enabled,
+    rail_max_order_usd,
+    rail_max_daily_realized_loss,
+    rail_max_orders_per_day,
+    rail_universe_allowlist,
+    rail_execution_mode_gating,
+    rail_account_state_sanity,
+]
+
+
 async def evaluate_policy(proposal) -> str | None:
     """Run all rails in order. Returns the first block reason or None.
     Auto-trips kill-switch on certain block reasons."""
+    return await _run_rails(_RAILS_IN_ORDER, proposal)
+
+
+async def evaluate_policy_for_intent(order_request) -> str | None:
+    """Run the subset of rails meaningful for a mechanical-strategy
+    order. `order_request` is duck-typed — needs .symbol, .size_usd,
+    .side, .stop_loss (an OrderRequest satisfies this). Returns the
+    first block reason or None. Auto-trips the kill-switch on the same
+    circuit-breaker reasons as the proposal path."""
+    return await _run_rails(_INTENT_RAILS_IN_ORDER, order_request)
+
+
+async def _run_rails(rails, subject) -> str | None:
     account = await _account_state()
-    for rail in _RAILS_IN_ORDER:
-        block = await rail(proposal, account)
+    for rail in rails:
+        block = await rail(subject, account)
         if block:
             for reason in _AUTO_TRIP_REASONS:
                 if reason in block:

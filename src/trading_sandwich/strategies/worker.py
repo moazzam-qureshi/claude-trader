@@ -41,6 +41,7 @@ from trading_sandwich.strategies.base import (
     StrategyContext,
     StrategyStatus,
 )
+from trading_sandwich.strategies.execution_bridge import dispatch_intents
 from trading_sandwich.strategies.snapshot import build_snapshot
 
 
@@ -200,6 +201,12 @@ async def _tick_one_strategy(
             "strategy %d (%s on %s) emitted %d intents",
             row.id, row.strategy_type, row.symbol, len(intents),
         )
+        placed = await dispatch_intents(row, intents)
+        if placed:
+            logger.info(
+                "strategy %d (%s on %s): placed %d/%d intents",
+                row.id, row.strategy_type, row.symbol, placed, len(intents),
+            )
     return True
 
 
