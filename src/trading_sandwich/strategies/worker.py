@@ -65,6 +65,9 @@ def _default_registry() -> dict[str, type[Strategy]]:
     from trading_sandwich.strategies.dca.value_averaging import (
         ValueAveragingStrategy,
     )
+    from trading_sandwich.strategies.dca.volatility_adj import (
+        VolatilityAdjustedDcaStrategy,
+    )
     from trading_sandwich.strategies.grid.geometric import GeometricGridStrategy
     from trading_sandwich.strategies.grid.infinity import InfinityGridStrategy
     from trading_sandwich.strategies.grid.reverse import ReverseGridStrategy
@@ -93,6 +96,7 @@ def _default_registry() -> dict[str, type[Strategy]]:
         "range_expansion_contraction": RangeExpansionStrategy,
         "dca_calendar": CalendarDcaStrategy,
         "dca_value_averaging": ValueAveragingStrategy,
+        "dca_volatility_adj": VolatilityAdjustedDcaStrategy,
     }
 
 
