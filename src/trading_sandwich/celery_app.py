@@ -127,14 +127,14 @@ app.conf.update(
             "schedule": 60.0,
         },
         # Heartbeat — portfolio-strategist review (Phase 3, 2026-05-12).
-        # Beat fires every 5 min; the task reads policy.yaml's heartbeat
-        # pacing (currently a fixed 30-min cadence) + STATE.md and decides
+        # Beat fires every 15 min; the task reads policy.yaml's heartbeat
+        # pacing (currently a fixed 6-hourly cadence) + STATE.md and decides
         # whether to actually spawn the strategist Claude or skip. Beat at a
         # finer grain than the pacing interval keeps the spawn from being
         # delayed by up to a full beat tick.
         "heartbeat_tick": {
             "task": "trading_sandwich.triage.heartbeat.heartbeat_tick_celery",
-            "schedule": 5 * 60.0,
+            "schedule": 15 * 60.0,
         },
         # Phase 3 — strategy worker (plan Task 1.15). Fires every 30s.
         # Each tick: lists active strategies, ticks each via its registry

@@ -1,8 +1,8 @@
 """Heartbeat scheduler — gating worker + Celery task wrapper.
 
-Pattern: Celery Beat fires every 30s; the task reads STATE.md and the
+Pattern: Celery Beat fires every 15 min; the task reads STATE.md and the
 heartbeat_shifts history, decides whether to spawn Claude (per pacing rules
-in policy.yaml's `heartbeat:` block — currently a fixed 30-min cadence),
+in policy.yaml's `heartbeat:` block — currently a fixed 6-hourly cadence),
 and either spawns + records, or records a skipped row and exits.
 
 Phase 3 (2026-05-12): the spawned Claude is the **portfolio strategist**

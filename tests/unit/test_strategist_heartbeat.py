@@ -7,10 +7,11 @@ the (frozen) discretionary trader. Two contracts pinned here:
    `emergency_override=True`; signal-triage tools belong to a path
    nothing drives anymore).
 
-2. `policy.yaml`'s `heartbeat.interval_minutes` pins the cadence to 30
-   minutes (min == max == 30 — the operator wants a fixed 30-min review,
-   not Claude self-pacing 15-240) and the daily/weekly shift caps allow
-   it (≥ 48/day, ≥ 336/week).
+2. `policy.yaml`'s `heartbeat.interval_minutes` pins the cadence to 6
+   hours (min == max == 360 — the operator wants a fixed 6-hourly
+   strategist review, in line with the persona's 6-24h design, not Claude
+   self-pacing) and the daily/weekly shift caps allow it (≥ 4/day,
+   ≥ 28/week, with headroom).
 """
 from __future__ import annotations
 
@@ -60,11 +61,11 @@ def test_allowed_tools_is_the_strategist_surface():
     assert not leaked, f"trader-only tools leaked into ALLOWED_TOOLS: {leaked}"
 
 
-def test_heartbeat_cadence_is_pinned_to_30_minutes():
+def test_heartbeat_cadence_is_pinned_to_6_hours():
     raw = yaml.safe_load(Path("policy.yaml").read_text())
     hb = raw["heartbeat"]
-    assert hb["interval_minutes"]["min"] == 30
-    assert hb["interval_minutes"]["max"] == 30
-    # a fixed 30-min review = up to 48/day, 336/week — caps must allow it
-    assert hb["daily_shift_cap"] >= 48
-    assert hb["weekly_shift_cap"] >= 336
+    assert hb["interval_minutes"]["min"] == 360
+    assert hb["interval_minutes"]["max"] == 360
+    # a fixed 6-hourly review = 4/day, 28/week — caps must allow it
+    assert hb["daily_shift_cap"] >= 4
+    assert hb["weekly_shift_cap"] >= 28

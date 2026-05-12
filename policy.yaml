@@ -163,21 +163,22 @@ auto_flatten_on_kill: false
 
 heartbeat:
   # Phase 3 (2026-05-12): the heartbeat now invokes the portfolio-strategist
-  # persona (runtime/CLAUDE.md). Operator wants a FIXED 30-min review — not
-  # Claude self-pacing — so min == max == 30. Whatever next_check_in_minutes
-  # the strategist writes into STATE.md is clamped to 30 by the pacing fn.
+  # persona (runtime/CLAUDE.md). Operator wants a FIXED 6-hourly review —
+  # in line with the persona's 6-24h design, not Claude self-pacing — so
+  # min == max == 360. Whatever next_check_in_minutes the strategist writes
+  # into STATE.md is clamped to 360 by the pacing fn.
   pacing_mode: fixed
   interval_minutes:
-    min: 30
-    max: 30
-    default: 30
+    min: 360
+    max: 360
+    default: 360
   defaults_by_state:
-    no_open_positions_no_active_theses: 30
-    active_theses_no_positions: 30
-    open_positions_far_from_invalidation: 30
-    open_positions_near_invalidation: 30
-  daily_shift_cap: 60          # >= 48 (one every 30 min) with headroom
-  weekly_shift_cap: 350        # >= 336 (48 * 7) with headroom
+    no_open_positions_no_active_theses: 360
+    active_theses_no_positions: 360
+    open_positions_far_from_invalidation: 360
+    open_positions_near_invalidation: 360
+  daily_shift_cap: 12          # >= 4 (one every 6h) with generous headroom
+  weekly_shift_cap: 84         # >= 28 (4 * 7) with generous headroom
   shift_timeout_seconds: 300
 
 # Phase 3 universe (spec §6.1, 2026-05-11) — full halal candidate set.
