@@ -162,18 +162,22 @@ auto_flatten_on_kill: false
 # ---------- Phase 2.7 — Heartbeat trader ----------
 
 heartbeat:
-  pacing_mode: dynamic
+  # Phase 3 (2026-05-12): the heartbeat now invokes the portfolio-strategist
+  # persona (runtime/CLAUDE.md). Operator wants a FIXED 30-min review — not
+  # Claude self-pacing — so min == max == 30. Whatever next_check_in_minutes
+  # the strategist writes into STATE.md is clamped to 30 by the pacing fn.
+  pacing_mode: fixed
   interval_minutes:
-    min: 15
-    max: 240
-    default: 60
+    min: 30
+    max: 30
+    default: 30
   defaults_by_state:
-    no_open_positions_no_active_theses: 120
-    active_theses_no_positions: 60
+    no_open_positions_no_active_theses: 30
+    active_theses_no_positions: 30
     open_positions_far_from_invalidation: 30
-    open_positions_near_invalidation: 15
-  daily_shift_cap: 60
-  weekly_shift_cap: 350
+    open_positions_near_invalidation: 30
+  daily_shift_cap: 60          # >= 48 (one every 30 min) with headroom
+  weekly_shift_cap: 350        # >= 336 (48 * 7) with headroom
   shift_timeout_seconds: 300
 
 # Phase 3 universe (spec §6.1, 2026-05-11) — full halal candidate set.

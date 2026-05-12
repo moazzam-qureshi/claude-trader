@@ -1,8 +1,17 @@
 """Heartbeat scheduler — gating worker + Celery task wrapper.
 
-Pattern: Celery Beat fires every 15 min. The task reads STATE.md and the
-heartbeat_shifts history, decides whether to spawn Claude (per pacing rules),
+Pattern: Celery Beat fires every 30s; the task reads STATE.md and the
+heartbeat_shifts history, decides whether to spawn Claude (per pacing rules
+in policy.yaml's `heartbeat:` block — currently a fixed 30-min cadence),
 and either spawns + records, or records a skipped row and exits.
+
+Phase 3 (2026-05-12): the spawned Claude is the **portfolio strategist**
+(runtime/CLAUDE.md, the persona rewritten in Wave 1 tasks 2.27-2.28). It
+reviews the strategy roster, capital allocation, and regime, and may
+deploy / pause / resume / wind_down strategies or adjust their allocation
+or params — but it does NOT place individual trades (`propose_trade` is
+frozen behind emergency_override=True). `ALLOWED_TOOLS` below is its MCP
+surface; the dead signal-triage / discretionary-trader tools were dropped.
 """
 from __future__ import annotations
 
@@ -108,25 +117,40 @@ def load_pacing_config():
 # Heartbeat tick — the Celery Beat target.
 # ---------------------------------------------------------------------------
 
+# The portfolio-strategist MCP surface. Strategy lifecycle + allocation +
+# regime + account/market context + diary/state + comms. Deliberately
+# OMITS the frozen `propose_trade` and the orphaned signal-triage tools
+# (get_signal / find_similar_signals / get_archetype_stats / save_decision
+# / get_recent_signals / get_market_snapshot) — the strategist allocates a
+# mechanical roster, it does not triage individual signals. `mutate_universe`
+# is also omitted: universe changes go through a `proposed_changes/` note for
+# operator review (the CURATE decision class), not a live mutation.
 ALLOWED_TOOLS = [
-    "mcp__tsandwich__get_signal",
-    "mcp__tsandwich__get_market_snapshot",
-    "mcp__tsandwich__find_similar_signals",
-    "mcp__tsandwich__get_archetype_stats",
-    "mcp__tsandwich__save_decision",
-    "mcp__tsandwich__send_alert",
-    "mcp__tsandwich__propose_trade",
+    # strategy lifecycle
+    "mcp__tsandwich__list_strategies",
+    "mcp__tsandwich__get_strategy_performance",
+    "mcp__tsandwich__get_account_allocation",
+    "mcp__tsandwich__get_regime_signals",
+    "mcp__tsandwich__deploy_strategy",
+    "mcp__tsandwich__pause_strategy",
+    "mcp__tsandwich__resume_strategy",
+    "mcp__tsandwich__wind_down_strategy",
+    "mcp__tsandwich__adjust_allocation",
+    "mcp__tsandwich__adjust_params",
+    "mcp__tsandwich__override_regime",
+    # account / market context
+    "mcp__tsandwich__get_open_positions",
+    "mcp__tsandwich__get_pipeline_health",
+    "mcp__tsandwich__get_universe",
+    "mcp__tsandwich__get_top_movers",
+    "mcp__tsandwich__assess_symbol_fit",
+    # diary / state / comms
     "mcp__tsandwich__read_diary",
     "mcp__tsandwich__write_state",
     "mcp__tsandwich__append_diary",
+    "mcp__tsandwich__send_alert",
     "mcp__tsandwich__notify_operator",
-    "mcp__tsandwich__mutate_universe",
-    "mcp__tsandwich__assess_symbol_fit",
-    "mcp__tsandwich__get_open_positions",
-    "mcp__tsandwich__get_universe",
-    "mcp__tsandwich__get_recent_signals",
-    "mcp__tsandwich__get_top_movers",
-    "mcp__tsandwich__get_pipeline_health",
+    # external market data
     "mcp__tradingview",
     "mcp__binance__binanceAccountInfo",
     "mcp__binance__binanceOrderBook",
