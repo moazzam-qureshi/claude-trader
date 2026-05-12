@@ -83,11 +83,11 @@ claude_daily_triage_cap: 500  # legacy cap from signal-triage era; heartbeat tra
 min_minutes_between_triages: 30
 
 # Phase 2 execution posture
-trading_enabled: false              # Phase 3 build gate (2026-05-10): discretionary trader
-                                    # gated at execution layer during Wave 0 build. Existing
-                                    # positions ride; rail_trading_enabled blocks all new
-                                    # proposals with reason "trading_disabled". Re-enable per
-                                    # spec cutover plan after Wave 1 strategies prove out.
+trading_enabled: true               # Phase 3 (2026-05-12): re-enabled for Task 2.30 — first
+                                    # Wave 1 live deployment (grid-btc-1, $30, operator-approved).
+                                    # The discretionary `propose_trade` path stays frozen behind
+                                    # emergency_override=True (Task 2.29); this gate now only
+                                    # un-blocks the mechanical-strategy intent rail.
 execution_mode: live                # halal spot live (mainnet, ~$113 USDT 2026-05-11 after operator transfer-out) — Spec A.5 shipped 2026-04-26
 
 # Proposal lifecycle
